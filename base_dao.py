@@ -10,7 +10,7 @@ class NovelModel:
     def __init__(self):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(current_dir)
-        if os.path.exists(os.path.join(current_dir, 'app.py')) or os.path.exists(
+        if os.path.exists(os.path.join(current_dir, 'main.py')) or os.path.exists(
                 os.path.join(current_dir, 'manage.py')):
             project_root = current_dir
         self.data_root = os.path.join(project_root, 'data')
