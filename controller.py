@@ -9,41 +9,9 @@ from base_dao import NovelModel
 api_bp = Blueprint('api', __name__)
 dao = NovelModel()
 
-
-# --------- 章节生成 --------
-"""
-1 本章要生成的内容
-    1 分析想法：分析作者的真实想法。
-2 准备内容
-    1 故事线：区间记忆包，第一章至上一章的摘要，上一章节的分析数据
-    2 知识库：书籍知识，伏笔信息、角色信息、事时条目、相关片段、情绪走向。    
-"""
-
-## 定稿保存
-"""
-1 获得请求，启动流程
-2 当前章节知识库生成：
-    生成摘要：
-    分析参与角色情感强度：
-    解析当前进度、事时条目
-    
-    向量数据提取与分类，向量数据转换，向量数据存储。
-    
-     
-
-
-"""
-
-
-
-
-
-
-
 # ---------- 书籍 ----------
 @api_bp.route('/books', methods=['GET'])
 def list_books():
-    """获取所有书籍名称"""
     return jsonify(dao.list_books())
 
 @api_bp.route('/books', methods=['POST'])
@@ -216,7 +184,6 @@ def delete_memory_pack(book_name, title):
         return jsonify({'message': '删除成功'})
     return jsonify({'error': '删除失败'}), 400
 
-
 # ---------- 章节分析 ----------
 @api_bp.route('/books/<book_name>/chapter_analyses', methods=['GET'])
 def list_chapter_analyses(book_name):
@@ -237,17 +204,27 @@ def update_chapter_analysis(book_name, chapter_id):
         return jsonify({'message': '更新成功'})
     return jsonify({'error': '更新失败'}), 400
 
+# ---------- 故事线 ----------
+@api_bp.route('/books/<book_name>/storylines', methods=['GET'])
+def list_storylines(book_name):
+    return jsonify(dao.list_storylines(book_name))
 
+@api_bp.route('/books/<book_name>/storylines', methods=['PUT'])
+def update_storylines(book_name):
+    data = request.json
+    nodes = data.get('nodes', [])
+    success = dao.update_storylines(book_name, nodes)
+    if success:
+        return jsonify({'message': '更新成功'})
+    return jsonify({'error': '更新失败'}), 400
 
 # ---------- AI相关 ----------
 @api_bp.route('/ai/models', methods=['GET'])
 def get_ai_models():
-    """获取可用模型列表"""
     return jsonify(ai_handler.get_available_models())
 
 @api_bp.route('/ai/chat', methods=['POST'])
 def ai_chat():
-    """发起对话（非流式）"""
     data = request.json
     messages = data.get('messages', [])
     model = data.get('model', 'openai/gpt-4o-mini')
@@ -256,37 +233,23 @@ def ai_chat():
     top_p = data.get('top_p', 1.0)
     api_key = data.get('api_key')
     session_id = data.get('session_id', str(uuid.uuid4()))
-
     try:
         response = ai_handler.chat(
-            messages=messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_p=top_p,
-            stream=False,
-            api_key=api_key
+            messages=messages, model=model, temperature=temperature,
+            max_tokens=max_tokens, top_p=top_p, stream=False, api_key=api_key
         )
         assistant_content = response.choices[0].message.content
-        # 保存日志
         ai_handler.save_conversation_log(
-            session_id=session_id,
-            user_message=messages[-1]['content'],
-            assistant_message=assistant_content,
-            model=model,
+            session_id=session_id, user_message=messages[-1]['content'],
+            assistant_message=assistant_content, model=model,
             params={"temperature": temperature, "max_tokens": max_tokens, "top_p": top_p}
         )
-        return jsonify({
-            "session_id": session_id,
-            "content": assistant_content,
-            "model": model
-        })
+        return jsonify({"session_id": session_id, "content": assistant_content, "model": model})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @api_bp.route('/ai/chat/stream', methods=['POST'])
 def ai_chat_stream():
-    """流式对话（Server-Sent Events）"""
     data = request.json
     messages = data.get('messages', [])
     model = data.get('model', 'openai/gpt-4o-mini')
@@ -300,26 +263,17 @@ def ai_chat_stream():
         full_response = ""
         try:
             response = ai_handler.chat(
-                messages=messages,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                top_p=top_p,
-                stream=True,
-                api_key=api_key
+                messages=messages, model=model, temperature=temperature,
+                max_tokens=max_tokens, top_p=top_p, stream=True, api_key=api_key
             )
             for chunk in response:
-                if ai_handler._stop_event.is_set():
-                    break
+                if ai_handler._stop_event.is_set(): break
                 content = chunk.choices[0].delta.content or ""
                 full_response += content
                 yield f"data: {json.dumps({'content': content})}\n\n"
-            # 保存日志
             ai_handler.save_conversation_log(
-                session_id=session_id,
-                user_message=messages[-1]['content'],
-                assistant_message=full_response,
-                model=model,
+                session_id=session_id, user_message=messages[-1]['content'],
+                assistant_message=full_response, model=model,
                 params={"temperature": temperature, "max_tokens": max_tokens, "top_p": top_p}
             )
         except Exception as e:
@@ -331,20 +285,15 @@ def ai_chat_stream():
 
 @api_bp.route('/ai/stop', methods=['POST'])
 def ai_stop():
-    """停止当前流式生成"""
     ai_handler.stop_generation()
     return jsonify({"status": "stopped"})
 
-
 @api_bp.route('/ai/config', methods=['GET'])
 def get_ai_config():
-    """获取保存的AI配置"""
     return jsonify(load_ai_config())
 
 @api_bp.route('/ai/config', methods=['POST'])
 def update_ai_config():
-    """保存AI配置"""
     data = request.json
     save_ai_config(data)
     return jsonify({"status": "ok"})
-

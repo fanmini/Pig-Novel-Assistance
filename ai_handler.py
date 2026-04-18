@@ -1,7 +1,7 @@
 # ai_handler.py
 import os
 import json
-import uuid
+import re
 from datetime import datetime
 from typing import List, Dict, Optional, Generator, Union
 import litellm
@@ -161,3 +161,5 @@ def save_ai_config(config):
 
 # 全局单例（便于在 Flask 中复用）
 ai_handler = AIHandler()
+
+
