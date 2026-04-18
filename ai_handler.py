@@ -18,11 +18,17 @@ class AIHandler:
 
     # 预定义可用模型列表（前端展示用）
     AVAILABLE_MODELS = [
+        {"id": "deepseek/deepseek-chat", "name": "DeepSeek-快速", "provider": "DeepSeek"},
+        {"id": "deepseek/deepseek-reasoner", "name": "DeepSeek-思考", "provider": "DeepSeek"},
+        {"id": "dashscope/qwen3-max-preview", "name": "通义千问 Max", "provider": "Alibaba"},
+        {"id": "dashscope/qwen-plus-latest", "name": "通义千问 Plus", "provider": "Alibaba"},
+        {"id": "gemini/gemini-2.0-flash", "name": "Gemini 2.0 Flash", "provider": "Google"},
+        {"id": "gemini/gemini-2.5-pro", "name": "Gemini 2.5 Pro", "provider": "Google"},
+        {"id": "moonshot/kimi-k2.5", "name": "Kimi (K2.5)", "provider": "Moonshot"},
+        {"id": "zhipu/glm-4.5", "name": "智谱 GLM-4.5", "provider": "Zhipu"},
         {"id": "openai/gpt-4o", "name": "GPT-4o", "provider": "OpenAI"},
         {"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini", "provider": "OpenAI"},
         {"id": "anthropic/claude-3.5-sonnet", "name": "Claude 3.5 Sonnet", "provider": "Anthropic"},
-        {"id": "gemini/gemini-2.0-flash", "name": "Gemini 2.0 Flash", "provider": "Google"},
-        {"id": "deepseek/deepseek-chat", "name": "DeepSeek Chat", "provider": "DeepSeek"},
     ]
 
     def __init__(self, log_dir: str = "logs"):

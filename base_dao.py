@@ -155,7 +155,7 @@ class NovelModel:
         if any(ch.get("id") == chapter_id for ch in chapters):
             return False
 
-        word_count = len(content)  # 纯文本字数（按字符数，可替换为更精确的中文分词计数）
+        word_count = len(content.replace('\r', '').replace('\n', ''))
         new_chapter = {
             "id": chapter_id,
             "title": title,
@@ -192,7 +192,7 @@ class NovelModel:
             target["title"] = kwargs["title"]
         if "content" in kwargs:
             target["content"] = kwargs["content"]
-            target["word_count"] = len(kwargs["content"])
+            target["word_count"] = len(kwargs["content"].replace('\r', '').replace('\n', ''))
         if "status" in kwargs:
             target["status"] = kwargs["status"]
 

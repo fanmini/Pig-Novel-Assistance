@@ -12,3 +12,10 @@ def index():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+
+"""
+1 势力模块
+2 剧情模块
+3 
+"""
