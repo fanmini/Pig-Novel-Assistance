@@ -115,6 +115,25 @@
         .editor-field textarea { min-height: 80px; max-height: 400px; resize: none; overflow-y: auto; }
         .editor-actions { padding: 16px 20px; border-top: 1px solid #eef2f6; display: flex; justify-content: flex-end; gap: 10px; }
 
+         /* ========= AI 助手设置面板样式补充 ========= */
+        .setting-group { margin-bottom: 16px; }
+        .setting-group label { display: block; font-size: 13px; font-weight: 500; color: #475569; margin-bottom: 6px; }
+        .setting-group input[type="password"],
+        .setting-group select,
+        .setting-group input[type="number"] { width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; outline: none; transition: 0.2s; background: white; }
+        .setting-group input:focus, .setting-group select:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.1); }
+        .setting-group input[type="range"] { width: 100%; margin-top: 4px; cursor: pointer; }
+
+        .slider-container { display: flex; align-items: center; gap: 10px; }
+        .slider-container input[type="number"] { width: 90px; }
+
+        .config-actions { margin-top: 20px; text-align: right; padding-bottom: 16px; border-bottom: 1px solid #e2e8f0; }
+
+        /* AI 测试聊天面板样式 */
+        .chat-msg { padding: 8px 14px; border-radius: 14px; font-size: 13px; max-width: 85%; word-wrap: break-word; line-height: 1.5; }
+        .chat-msg.user { align-self: flex-end; background: #3b82f6; color: white; border-bottom-right-radius: 4px; }
+        .chat-msg.assistant { align-self: flex-start; background: white; border: 1px solid #e2e8f0; color: #1e293b; border-bottom-left-radius: 4px; }
+
         /* ========= 故事线 Timeline 增强样式 ========= */
         .timeline { padding: 12px 6px; padding-bottom: 30px; }
         .tl-item { position: relative; padding: 0 0 16px 28px; cursor: pointer; }
@@ -263,11 +282,7 @@
       // AI 相关
       const aiModels = ref([]);
       const aiConfig = reactive({ model: 'openai/gpt-4o-mini', api_key: '', temperature: 0.7, max_tokens: 1024, top_p: 1.0 });
-      const testMessages = ref([]);
-      const testInput = ref('');
-      const isGenerating = ref(false);
-      let currentSessionId = null;
-      let abortController = null;
+      const isTestingConnection = ref(false);
 
       const aiMessages = ref([{ role: 'assistant', content: '你好！我是你的写作AI～' }]);
       const aiInput = ref('');
@@ -422,8 +437,41 @@
       async function loadAIModels() { try { aiModels.value = await apiFetch(`${API_BASE}/ai/models`); } catch (e) { showToast('加载模型列表失败', 'error'); } }
       async function loadAIConfig() { try { const config = await apiFetch(`${API_BASE}/ai/config`); aiConfig.model = config.model || aiConfig.model; aiConfig.api_key = config.api_key || ''; aiConfig.temperature = config.temperature ?? 0.7; aiConfig.max_tokens = config.max_tokens ?? 1024; aiConfig.top_p = config.top_p ?? 1.0; } catch (e) { showToast('加载配置失败', 'error'); } }
       async function saveAIConfig() { try { await apiFetch(`${API_BASE}/ai/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: aiConfig.model, api_key: aiConfig.api_key, temperature: aiConfig.temperature, max_tokens: aiConfig.max_tokens, top_p: aiConfig.top_p }) }); showToast('配置已保存', 'success'); } catch (e) { showToast('保存失败', 'error'); } }
-      async function sendTestMessage() { const msg = testInput.value.trim(); if (!msg) return; testMessages.value.push({ role: 'user', content: msg }); testInput.value = ''; isGenerating.value = true; abortController = new AbortController(); const assistantMsg = { role: 'assistant', content: '' }; testMessages.value.push(assistantMsg); try { const res = await fetch(`${API_BASE}/ai/chat/stream`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: testMessages.value.filter(m => m.role !== 'assistant' || m.content !== ''), model: aiConfig.model, temperature: aiConfig.temperature, max_tokens: aiConfig.max_tokens, top_p: aiConfig.top_p, api_key: aiConfig.api_key || undefined, session_id: currentSessionId }), signal: abortController.signal }); const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; while (true) { const { done, value } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || ''; for (const line of lines) { if (line.startsWith('data: ')) { const data = line.slice(6); if (data === '[DONE]') { isGenerating.value = false; return; } try { const parsed = JSON.parse(data); if (parsed.content) assistantMsg.content += parsed.content; if (parsed.session_id) currentSessionId = parsed.session_id; } catch (e) {} } } } } catch (e) { if (e.name !== 'AbortError') showToast('请求失败: ' + e.message, 'error'); } finally { isGenerating.value = false; abortController = null; } }
-      async function stopGeneration() { if (abortController) { abortController.abort(); abortController = null; } try { await apiFetch(`${API_BASE}/ai/stop`, { method: 'POST' }); } catch (e) {} isGenerating.value = false; }
+      async function testAiConnection() {
+        if (isTestingConnection.value) return;
+        isTestingConnection.value = true;
+        try {
+          // 构建测试请求：直接发一条指令让 AI 简短回复
+          const payload = {
+            messages: [{ role: 'user', content: '你好，这是一个测试连接消息，请简短回复“连接成功”即可。' }],
+            model: aiConfig.model,
+            temperature: 0.1, // 降低温度让输出稳定
+            max_tokens: 50,   // 测试不需要生成太长
+            top_p: aiConfig.top_p,
+            api_key: aiConfig.api_key || undefined,
+            session_id: 'SYSTEM_TEST'
+          };
+
+          const res = await fetch(`${API_BASE}/ai/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '请求失败');
+
+          if (data.content) {
+            showToast('🎉 连接成功！模型回复：' + data.content, 'success');
+          } else {
+            showToast('未返回内容，请检查模型配置', 'error');
+          }
+        } catch (e) {
+          showToast('❌ 测试失败: ' + e.message, 'error');
+        } finally {
+          isTestingConnection.value = false;
+        }
+      }
       async function sendAiMessage() { const msg = aiInput.value.trim(); if (aiMode.value === 'continue' && !msg) { showToast('续写模式下不能为空', 'error'); return; } aiMessages.value.push({ role: 'user', content: msg || '（空）' }); aiInput.value = ''; setTimeout(() => { aiMessages.value.push({ role: 'assistant', content: `🤖 收到：关于“${msg}”，建议记录到伏笔或角色弧光中～` }); }, 500); nextTick(adjustAiTextareaHeight); }
       async function triggerFinalize(isReFinal) {
         if (!currentBook.value || !currentChapterId.value) return;
@@ -530,8 +578,8 @@
         isTailCompleted, isLastNode, editStorylineNode, addParentStoryline, addChildStoryline, deleteStorylineNode, updateStorylineProgress, saveStorylinesTree,
         newCharacter, editCharacter, saveCharacter, deleteCharacter, cancelEditCharacter,
         manualSave, sendAiMessage, metaList, startDelete, cancelDelete, confirmDelete,
-        aiModels, aiConfig, testMessages, testInput, isGenerating, autoResizeTextarea,
-        sendTestMessage, stopGeneration, saveAIConfig,
+        aiModels, aiConfig, autoResizeTextarea,
+        isTestingConnection, testAiConnection, saveAIConfig,
         toggleSaveDropdown, handleSave,
         importanceOptions: [{ value: 1, label: '龙套' }, { value: 2, label: '配角' }, { value: 3, label: '核心' }]
       };
@@ -721,10 +769,11 @@
               <div class="setting-group"><label>Temperature: [[ aiConfig.temperature ]]</label><input type="range" min="0" max="2" step="0.1" v-model="aiConfig.temperature"></div>
               <div class="setting-group"><label>Max Tokens</label><div class="slider-container"><input type="range" min="100" max="128000" step="50" v-model="aiConfig.max_tokens"><input type="number" min="100" max="2000000" step="50" v-model="aiConfig.max_tokens"></div></div>
               <div class="setting-group"><label>Top P: [[ aiConfig.top_p ]]</label><input type="range" min="0" max="1" step="0.05" v-model="aiConfig.top_p"></div>
-              <div class="config-actions"><button class="modal-btn primary" @click="saveAIConfig">💾 保存配置</button></div>
-              <div class="test-chat">
-                <div class="chat-messages"><div v-for="(msg, idx) in testMessages" :key="idx" class="chat-msg" :class="msg.role">[[ msg.content ]]</div></div>
-                <div class="chat-input"><input v-model="testInput" @keyup.enter="sendTestMessage" placeholder="测试消息..." :disabled="isGenerating"><button class="modal-btn primary" @click="sendTestMessage" :disabled="isGenerating">发送</button><button class="modal-btn secondary" @click="stopGeneration" v-if="isGenerating">停止</button></div>
+              <div class="config-actions" style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="modal-btn secondary" @click="testAiConnection" :disabled="isTestingConnection">
+                  [[ isTestingConnection ? '⏳ 测试中...' : '🔌 测试连接' ]]
+                </button>
+                <button class="modal-btn primary" @click="saveAIConfig">💾 保存配置</button>
               </div>
             </div>
           </div>
