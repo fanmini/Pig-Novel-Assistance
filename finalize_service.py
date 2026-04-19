@@ -1,7 +1,9 @@
 # finalize_service.py
 import json
+import queue
 import re
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import ThreadPoolExecutor, wait
 from base_dao import NovelModel
 from ai_handler import ai_handler, load_ai_config
 from vector_dao import vector_dao
@@ -70,12 +72,18 @@ def task_knowledge_analysis(book_name: str, chapter_id: int, content: str):
     if not ai_json:
         return
 
-    # 4. 数据落盘：保存分析数据
+    # 【新增解析 1】：获取故事线进展描述，绑定节点进度
+    action_data = ai_json.get('storyline_action', {})
+    progress_desc = action_data.get('progress_desc', '')
+    if not progress_desc:
+        progress_desc = ai_json.get('story_position', '')  # 兼容兜底
+
+    # 4. 数据落盘：保存分析数据 (写入与节点绑定的进度)
     dao.add_or_update_chapter_analysis(
         book_name, chapter_id,
         summary=ai_json.get('summary', ''),
         key_events=ai_json.get('key_events', []),
-        story_position=ai_json.get('story_position', ''),
+        story_position=progress_desc,
         emotion_intensity=ai_json.get('emotion_intensity', 1),
         involved_characters=ai_json.get('involved_characters', [])
     )
@@ -86,26 +94,32 @@ def task_knowledge_analysis(book_name: str, chapter_id: int, content: str):
         if char_name not in existing_char_names:
             dao.add_character(book_name, char_name, change_log=f"首次出现于第{chapter_id}章")
 
-    # 6. 故事线 A/B/C 状态机逻辑（仅限最新章节，防止修改历史章节）
-    import time
+    # 【新增逻辑：5.5 自动提取与更新伏笔】
+    planted_fs_list = ai_json.get('planted_foreshadows', [])
+    for fs in planted_fs_list:
+        fs_name = fs.get('name')
+        fs_content = fs.get('content')
+        if fs_name and fs_content:
+            dao.add_foreshadow(book_name, fs_name, chapter_id, fs_content, status="埋设中")
 
-    # 【核心逻辑 1：剧情前沿判定 (Frontier Check)】
-    # 只要当前章的“后面”没有任何已经生成过摘要的章节，当前章就是“剧情前沿”！
-    # 这样就算作者预建了 100 个空章节，然后按序录入，也能完美触发故事线生长。
+    revealed_fs_list = ai_json.get('revealed_foreshadows', [])
+    for fs_name in revealed_fs_list:
+        if fs_name:
+            # 自动将前文的旧伏笔更新为“已揭示”
+            dao.update_foreshadow(book_name, fs_name, revealed_chapter=chapter_id, status="已揭示")
+
+    # 6. 故事线状态机逻辑（融合了严密的进度推进）
+    import time
     is_frontier = True
     analyses = dao.list_chapter_analyses(book_name)
     for an in analyses:
-        # 如果存在比当前 ID 大的章节，并且它已经有了 summary，说明是在修文（历史编辑）
         if an.get('chapter_id', 0) > chapter_id and an.get('summary'):
             is_frontier = False
             break
 
     if is_frontier:
-        action_data = ai_json.get('storyline_action', {})
         action = action_data.get('action', 'MATCH')
 
-        # 【核心逻辑 2：活跃锚点追踪 (Active Anchor)】
-        # 寻找目前排在最前面的“未完成大节点”作为当前的活跃锚点
         active_main_idx = -1
         for i, p in enumerate(storylines):
             if not p.get('is_completed'):
@@ -113,19 +127,19 @@ def task_knowledge_analysis(book_name: str, chapter_id: int, content: str):
                 break
 
         if action == 'NEW_MAIN':
-            # 如果 AI 判定开启了完全不在大纲里的新卷
-            # 1. 把当前的活跃大节点标记完结
+            # 开启新卷：把旧卷打上完成标签
             if active_main_idx != -1:
                 storylines[active_main_idx]['is_completed'] = True
+                for c in storylines[active_main_idx].get('children', []):
+                    c['is_completed'] = True
 
-            # 2. 在末尾追加全新的大卷和起始小节点
             new_p = {
                 "id": 'p_' + str(int(time.time() * 1000)),
-                "name": action_data.get('new_main_name', '新大节点'),
+                "name": action_data.get('new_main_name', '初始剧情/新大卷'),
                 "content": "", "foreshadows": [], "is_completed": False,
                 "children": [{
                     "id": 'c_' + str(int(time.time() * 1000) + 1),
-                    "name": action_data.get('new_sub_name', '新小节点'),
+                    "name": action_data.get('new_sub_name', '起始事件'),
                     "content": "", "foreshadows": [], "is_completed": False
                 }]
             }
@@ -133,10 +147,15 @@ def task_knowledge_analysis(book_name: str, chapter_id: int, content: str):
             dao.update_storylines(book_name, storylines)
 
         elif action == 'NEW_SUB':
-            # 如果 AI 判定发生了计划外的小事件
             if active_main_idx != -1:
-                # 直接挂在当前的“活跃大节点”下面，作为新支线
                 p = storylines[active_main_idx]
+                # 有新事件发生，说明上一个未完成的事件走完了，将其闭环
+                if p.get('children'):
+                    for c in reversed(p['children']):
+                        if not c.get('is_completed'):
+                            c['is_completed'] = True
+                            break
+
                 p['children'] = p.get('children', [])
                 p['children'].append({
                     "id": 'c_' + str(int(time.time() * 1000)),
@@ -145,10 +164,10 @@ def task_knowledge_analysis(book_name: str, chapter_id: int, content: str):
                 })
                 dao.update_storylines(book_name, storylines)
             else:
-                # 连大节点都没有，直接兜底建一个
+                # 兜底：如果没有大节点，新建一个
                 new_p = {
                     "id": 'p_' + str(int(time.time() * 1000)),
-                    "name": "未命名初始剧情",
+                    "name": "初始剧情",
                     "content": "", "foreshadows": [], "is_completed": False,
                     "children": [{
                         "id": 'c_' + str(int(time.time() * 1000) + 1),
@@ -160,9 +179,22 @@ def task_knowledge_analysis(book_name: str, chapter_id: int, content: str):
                 dao.update_storylines(book_name, storylines)
 
         elif action == 'MATCH':
-            # 完美命中作者的预设大纲节点，或者仍在当前节点发展。
-            # 什么都不需要新建，维持树状结构不动。
-            pass
+            # 精确匹配节点：使用提取到的 current_node
+            matched_name = action_data.get('current_node', '')
+            if active_main_idx != -1 and matched_name:
+                p = storylines[active_main_idx]
+                state_changed = False
+
+                # 自动填补跳过的节点状态
+                for c in p.get('children', []):
+                    if c.get('name') == matched_name:
+                        break  # 找到了现在的位置，停止标记
+                    if not c.get('is_completed'):
+                        c['is_completed'] = True
+                        state_changed = True
+
+                if state_changed:
+                    dao.update_storylines(book_name, storylines)
 
 
 def task_vector_storage(book_name: str, chapter_id: int, content: str):
@@ -186,7 +218,71 @@ def task_vector_storage(book_name: str, chapter_id: int, content: str):
             vector_dao.save_snippet_tags(book_name, chapter_id, snippet_content, tags)
 
 
-def run_finalize_pipeline(book_name: str, chapter_id: int, content: str):
+def cleanup_chapter_data(book_name: str, chapter_id: int):
+    """大清洗方法：清除当前章节的所有旧分析数据和向量碎片"""
+    # 1. 清理本地 JSON 中的本章分析数据
+    dao.delete_chapter_analysis(book_name, chapter_id)
+    # 2. 清理向量数据库中的本章碎片
+    vector_dao.delete_snippets_by_chapter(book_name, chapter_id)
+
+
+def run_finalize_pipeline(book_name: str, chapter_id: int, content: str, is_re_final: bool = False):
     """触发并发流水线"""
+    if is_re_final:
+        # 如果是重新定稿，必须先在主线程把旧数据清理干净！
+        cleanup_chapter_data(book_name, chapter_id)
+
     executor.submit(task_knowledge_analysis, book_name, chapter_id, content)
     executor.submit(task_vector_storage, book_name, chapter_id, content)
+
+
+def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, is_re_final: bool = False):
+    """【感知系统核心】带流式反馈的并发定稿流水线"""
+    q = queue.Queue()
+
+    def log_msg(msg):
+        """向前端小助手推送消息"""
+        q.put(msg)
+
+    def worker():
+        try:
+            if is_re_final:
+                log_msg("🧹 正在清理当前章节的历史残留数据...")
+                cleanup_chapter_data(book_name, chapter_id)  # 这里的 cleanup 必须是你刚才加过的那个
+                log_msg("✨ 历史数据清理完毕！")
+
+            log_msg("🚀 正在启动后台双轨 AI 引擎...")
+
+            # 包装一下原有的两个任务，加上状态汇报
+            def task_a():
+                log_msg("🧠 知识分析引擎：开始提取摘要、角色与伏笔...")
+                task_knowledge_analysis(book_name, chapter_id, content)
+                log_msg("✅ 知识分析引擎：分析完毕，故事线已同步推演！")
+
+            def task_b():
+                log_msg("🔪 向量切片引擎：开始寻找高光片段并打标...")
+                task_vector_storage(book_name, chapter_id, content)
+                log_msg("✅ 向量切片引擎：所有切片入库完毕！")
+
+            future_a = executor.submit(task_a)
+            future_b = executor.submit(task_b)
+
+            # 等待两个并发任务全部完成
+            wait([future_a, future_b])
+            q.put("DONE")
+        except Exception as e:
+            log_msg(f"❌ 引擎运行出现错误: {str(e)}")
+            q.put("DONE")
+
+    # 启动后台主控线程
+    threading.Thread(target=worker).start()
+
+    # 持续向前端吐出状态
+    while True:
+        msg = q.get()
+        if msg == "DONE":
+            yield f"data: {json.dumps({'content': '🎉 章节定稿全部完成，你可以继续创作啦！'})}\n\n"
+            yield "data: [DONE]\n\n"
+            break
+        else:
+            yield f"data: {json.dumps({'content': msg})}\n\n"

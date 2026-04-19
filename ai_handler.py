@@ -2,6 +2,7 @@
 import os
 import json
 import re
+import threading
 from datetime import datetime
 from typing import List, Dict, Optional, Generator, Union
 import litellm
@@ -36,6 +37,7 @@ class AIHandler:
         os.makedirs(self.log_dir, exist_ok=True)
         self._stop_event = Event()          # 用于中断生成
         self._current_stream = None
+        self._lock = threading.Lock()  # 【新增】日志写入锁，防止并发写乱
 
     def get_available_models(self) -> List[Dict]:
         """返回可用模型列表"""
@@ -73,16 +75,25 @@ class AIHandler:
 
         try:
             response = completion(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                top_p=top_p,
-                stream=stream,
-                **kwargs
+                model=model, messages=messages, temperature=temperature,
+                max_tokens=max_tokens, top_p=top_p, stream=stream, **kwargs
             )
-            if stream:
+
+            # 【核心新增】：如果是阻塞型调用（比如定稿分析），在底层直接拦截并记录日志！
+            if not stream:
+                assistant_content = response.choices[0].message.content
+                # 记录最后一条 user 消息
+                user_msg = messages[-1]['content'] if messages else "SYSTEM_CALL"
+                self.save_conversation_log(
+                    session_id="SYSTEM_AUTO_LOG",  # 标记为系统自动记录
+                    user_message=user_msg,
+                    assistant_message=assistant_content,
+                    model=model,
+                    params={"temperature": temperature, "max_tokens": max_tokens, "top_p": top_p}
+                )
+            else:
                 self._current_stream = response
+
             return response
         except Exception as e:
             raise e
@@ -134,8 +145,9 @@ class AIHandler:
         }
         filename = datetime.now().strftime("%Y-%m-%d") + ".jsonl"
         filepath = os.path.join(self.log_dir, filename)
-        with open(filepath, "a", encoding="utf-8") as f:
-            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        with self._lock:
+            with open(filepath, "a", encoding="utf-8") as f:
+                f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
 def load_ai_config():
     """加载AI配置，若文件不存在则返回默认配置"""

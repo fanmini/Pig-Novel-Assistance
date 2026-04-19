@@ -146,8 +146,10 @@
         .ai-sidebar { width: 325px; background: #fff; border-left: 1px solid #e9eef3; display: flex; flex-direction: column; flex-shrink: 0; margin: 8px 8px 8px 0; border-radius: 20px; overflow: hidden; }
         .ai-header { padding: 12px 14px; border-bottom: 1px solid #eef2f6; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
         .ai-messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-        .message-bubble { padding: 8px 12px; border-radius: 18px; background: #f1f5f9; font-size: 13px; line-height: 1.5; }
+        .message { display: flex; flex-direction: column; align-items: flex-start; }
+        .message.user { align-items: flex-end; }
         .message.user .message-bubble { background: #3b82f6; color: white; }
+        .message-bubble { padding: 8px 12px; border-radius: 18px; background: #f1f5f9; font-size: 13px; line-height: 1.5; max-width: 85%; }
         .ai-input-area { padding: 12px; border-top: 1px solid #eef2f6; background: #fff; }
         .mode-switch { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
         .mode-btn { flex: 1; padding: 6px 0; border-radius: 30px; border: 1px solid #e2e8f0; background: #f8fafc; font-size: 12px; cursor: pointer; text-align: center; }
@@ -224,6 +226,30 @@
       const charactersList = ref([]);
       const foreshadowsList = ref([]);
       const memoryPacksList = ref([]);
+
+      // 伏笔
+      const expandedForeshadowChapters = ref(new Set());
+      const groupedForeshadows = computed(() => {
+          const groups = {};
+          const unassigned = [];
+          foreshadowsList.value.forEach(f => {
+              const ch = f.planted_chapter;
+              if (ch) {
+                  if (!groups[ch]) groups[ch] = [];
+                  groups[ch].push(f);
+              } else {
+                  unassigned.push(f);
+              }
+          });
+          const sortedKeys = Object.keys(groups).map(Number).sort((a,b)=>a-b);
+          const result = sortedKeys.map(k => ({ chapter: k, items: groups[k] }));
+          if (unassigned.length > 0) result.push({ chapter: '未分类', items: unassigned });
+          return result;
+      });
+      function toggleFsExpand(ch) {
+          expandedForeshadowChapters.value.has(ch) ? expandedForeshadowChapters.value.delete(ch) : expandedForeshadowChapters.value.add(ch);
+          expandedForeshadowChapters.value = new Set(expandedForeshadowChapters.value);
+      }
 
       // 故事线管理
       const storylineNodes = ref([]);
@@ -405,26 +431,61 @@
         // 确保本地内容先存一版
         await saveChapterSilently();
 
-        try {
-          const ch = chapters.value.find(c => c.id === currentChapterId.value);
-          const payload = {
-              title: editorTitle.value,
-              content: editorContent.value
-          };
+        const ch = chapters.value.find(c => c.id === currentChapterId.value);
+        const payload = { title: editorTitle.value, content: editorContent.value, is_re_final: isReFinal };
 
-          showToast('正在启动AI后台定稿引擎...', 'info');
-          // 调用我们刚刚写好的新接口
-          await apiFetch(`${API_BASE}/books/${currentBook.value}/chapters/${currentChapterId.value}/finalize`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
+        // 强制打开AI侧边栏并初始化第一条消息
+        showAiSidebar.value = true;
+        aiMode.value = 'generate';
+        aiMessages.value.push({ role: 'assistant', content: isReFinal ? '🔄 收到重新定稿指令，马上为您调度后台算力！' : '🚀 收到定稿指令，正在为您调度后台算力...' });
+
+        const scrollToBottom = () => {
+            nextTick(() => { const el = document.querySelector('.ai-messages'); if(el) el.scrollTop = el.scrollHeight; });
+        };
+        scrollToBottom();
+
+        try {
+          const res = await fetch(`${API_BASE}/books/${currentBook.value}/chapters/${currentChapterId.value}/finalize`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
           });
 
-          // 在前端 UI 上把绿色的“定稿”标贴上
-          if(ch) ch.status = true;
-          showToast(isReFinal ? '重新定稿成功，AI正在重构当前章数据！' : '定稿成功，AI正在提取故事线与向量碎片！', 'success');
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while(true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, {stream: true});
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
+
+              for (const line of lines) {
+                  if (line.startsWith('data: ')) {
+                      const data = line.slice(6);
+                      if (data === '[DONE]') {
+                          if(ch) ch.status = true;
+
+                          // 【核心修复】：定稿结束后，必须重新拉取故事线和伏笔，刷新界面进度！
+                          await loadStorylines();
+                          await loadForeshadows();
+                          await loadAnalysisData();
+
+                          return;
+                      }
+                      try {
+                          const parsed = JSON.parse(data);
+                          if(parsed.content) {
+                              aiMessages.value.push({ role: 'assistant', content: parsed.content });
+                              scrollToBottom();
+                          }
+                      } catch(e) {}
+                  }
+              }
+          }
         } catch (e) {
-          showToast('定稿启动失败: ' + e.message, 'error');
+          aiMessages.value.push({ role: 'assistant', content: '❌ 定稿流程发生网络中断，请检查控制台。' });
+          scrollToBottom();
         }
       }
 
@@ -450,6 +511,7 @@
       loadBooks();
 
       return {
+        expandedForeshadowChapters, groupedForeshadows, toggleFsExpand,
         toasts, showToast,
         books, currentBook, chapters, currentChapterId, isEditingBookName, newBookName,
         activePanel, expandedChapters, showAiSidebar, editMode, editingMeta, editingCharacter,
@@ -577,13 +639,23 @@
                 <div v-if="!metaList.length" style="padding:12px;color:#94a3b8;text-align:center;">暂无条目</div>
               </template>
               <template v-if="kbActiveTab === 'foreshadow'">
-                <div v-for="fs in foreshadowsList" :key="fs.name" class="kb-item" @click="editForeshadow(fs)">
-                  <span class="kb-item-key" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px;">[[ fs.name ]]</span><span style="margin-left:8px;font-size:11px;color:#64748b;flex-shrink:0;">第[[ fs.planted_chapter ]]章</span>
-                  <div v-if="deletingItemId?.type === 'foreshadow' && deletingItemId.key === fs.name" class="delete-confirm">
-                    <button class="confirm-yes" @click.stop="confirmDelete('foreshadow', fs.name)">删除</button>
-                    <button class="confirm-no" @click.stop="cancelDelete">取消</button>
-                  </div>
-                  <span v-else class="kb-item-delete" @click.stop="startDelete('foreshadow', fs.name)">✕</span>
+                <div v-for="group in groupedForeshadows" :key="group.chapter" class="analysis-chapter-item">
+                    <div class="analysis-chapter-header" @click="toggleFsExpand(group.chapter)">
+                        <span class="expand-icon">[[ expandedForeshadowChapters.has(group.chapter) ? '▼' : '▶' ]]</span>
+                        <span style="font-weight: 600;">[[ group.chapter === '未分类' ? '未分类' : '第' + group.chapter + '章' ]]</span>
+                        <span style="font-size:11px; color:#94a3b8; margin-left:8px;">([[ group.items.length ]]个)</span>
+                    </div>
+                    <div v-if="expandedForeshadowChapters.has(group.chapter)" style="padding: 4px 8px 8px;">
+                        <div v-for="fs in group.items" :key="fs.name" class="kb-item" @click="editForeshadow(fs)" style="margin-bottom:6px;">
+                            <span class="kb-item-key" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px;">[[ fs.name ]]</span>
+                            <span style="margin-left:8px;font-size:11px;padding:2px 6px;border-radius:10px;background:#eef2ff;color:#3b82f6;">[[ fs.status ]]</span>
+                            <div v-if="deletingItemId?.type === 'foreshadow' && deletingItemId.key === fs.name" class="delete-confirm">
+                                <button class="confirm-yes" @click.stop="confirmDelete('foreshadow', fs.name)">删除</button>
+                                <button class="confirm-no" @click.stop="cancelDelete">取消</button>
+                            </div>
+                            <span v-else class="kb-item-delete" @click.stop="startDelete('foreshadow', fs.name)">✕</span>
+                        </div>
+                    </div>
                 </div>
                 <div v-if="!foreshadowsList.length" style="padding:12px;color:#94a3b8;text-align:center;">暂无伏笔</div>
               </template>
@@ -733,7 +805,11 @@
 
           <div class="ai-sidebar" v-show="showAiSidebar">
             <div class="ai-header"><span>🤖 文形小助手</span></div>
-            <div class="ai-messages">...</div>
+            <div class="ai-messages">
+              <div v-for="(msg, idx) in aiMessages" :key="idx" class="message" :class="msg.role">
+                <div class="message-bubble">[[ msg.content ]]</div>
+              </div>
+            </div>
             <div class="ai-input-area">
               <div class="mode-switch">
                 <div class="mode-btn" :class="{ active: aiMode === 'generate' }" @click="aiMode = 'generate'">章节生成</div>

@@ -1,7 +1,5 @@
 from flask import Flask, render_template
 from controller import api_bp
-import litellm
-litellm.set_verbose = True  # 开启这行后，控制台会打印出最原始、最详细的报错原因
 
 app = Flask(__name__)
 

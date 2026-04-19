@@ -33,5 +33,18 @@ class VectorDAO:
         if docs:
             collection.add(documents=docs, metadatas=metadatas, ids=ids)
 
+    def delete_snippets_by_chapter(self, book_name: str, chapter_id: int):
+        """核心新增：根据章节ID，精确删除 ChromaDB 中的旧片段，防止数据冗余"""
+        safe_book_name = hashlib.md5(book_name.encode('utf-8')).hexdigest()
+        collection_name = f"book_{safe_book_name}"
+        try:
+            collection = self.client.get_collection(name=collection_name)
+            # 利用 ChromaDB 的 metadata 过滤功能进行精准删除
+            collection.delete(where={"chapter_id": chapter_id})
+            print(f"已清理向量库中《{book_name}》第 {chapter_id} 章的历史碎片。")
+        except Exception:
+            # 如果集合还没创建过，直接忽略即可
+            pass
+
 
 vector_dao = VectorDAO()

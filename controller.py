@@ -2,7 +2,7 @@ import json
 import uuid
 
 from flask import Blueprint, request, jsonify, Response
-from finalize_service import run_finalize_pipeline
+from finalize_service import run_finalize_pipeline, run_finalize_pipeline_stream
 from ai_handler import ai_handler, load_ai_config, save_ai_config
 from base_dao import NovelModel
 
@@ -85,19 +85,19 @@ def delete_chapter(book_name, chapter_id):
 
 @api_bp.route('/books/<book_name>/chapters/<int:chapter_id>/finalize', methods=['POST'])
 def finalize_chapter(book_name, chapter_id):
-    # 1. 从前端拿数据并先保存到本地更新状态
     data = request.json
     title = data.get('title', '')
     content = data.get('content', '')
+    is_re_final = data.get('is_re_final', False)
 
     # 状态强行标记为 true (已定稿)
     dao.update_chapter(book_name, chapter_id, title=title, content=content, status=True)
 
-    # 2. 将耗时的 AI 提取和向量存储扔给后台线程池
-    run_finalize_pipeline(book_name, chapter_id, content)
-
-    # 3. 立即响应前端，不让用户转圈圈等待
-    return jsonify({'message': '已保存并定稿，AI 分析助手已在后台火力全开运转！'}), 200
+    # 【核心修改】：不再直接返回 JSON，而是返回流式事件，唤醒前端的小助手
+    return Response(
+        run_finalize_pipeline_stream(book_name, chapter_id, content, is_re_final),
+        mimetype='text/event-stream'
+    )
 
 # ---------- 角色 ----------
 @api_bp.route('/books/<book_name>/characters', methods=['GET'])
