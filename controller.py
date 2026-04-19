@@ -2,7 +2,7 @@ import json
 import uuid
 
 from flask import Blueprint, request, jsonify, Response
-
+from finalize_service import run_finalize_pipeline
 from ai_handler import ai_handler, load_ai_config, save_ai_config
 from base_dao import NovelModel
 
@@ -81,6 +81,23 @@ def delete_chapter(book_name, chapter_id):
     if success:
         return jsonify({'message': '删除成功'})
     return jsonify({'error': '删除失败'}), 400
+
+
+@api_bp.route('/books/<book_name>/chapters/<int:chapter_id>/finalize', methods=['POST'])
+def finalize_chapter(book_name, chapter_id):
+    # 1. 从前端拿数据并先保存到本地更新状态
+    data = request.json
+    title = data.get('title', '')
+    content = data.get('content', '')
+
+    # 状态强行标记为 true (已定稿)
+    dao.update_chapter(book_name, chapter_id, title=title, content=content, status=True)
+
+    # 2. 将耗时的 AI 提取和向量存储扔给后台线程池
+    run_finalize_pipeline(book_name, chapter_id, content)
+
+    # 3. 立即响应前端，不让用户转圈圈等待
+    return jsonify({'message': '已保存并定稿，AI 分析助手已在后台火力全开运转！'}), 200
 
 # ---------- 角色 ----------
 @api_bp.route('/books/<book_name>/characters', methods=['GET'])

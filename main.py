@@ -1,5 +1,7 @@
 from flask import Flask, render_template
 from controller import api_bp
+import litellm
+litellm.set_verbose = True  # 开启这行后，控制台会打印出最原始、最详细的报错原因
 
 app = Flask(__name__)
 
@@ -35,5 +37,5 @@ if __name__ == '__main__':
 2 当前章节知识库生成：（需要的资料：小说已有摘要、故事线。）
     1 生成摘要、当前涉及角色、情感强度、解析故事线进度、事时条目
     2 向量数据提取与分类，向量数据转换，向量数据存储。
-
+If you need to debug this error, use `litellm._turn_on_debug()
 """

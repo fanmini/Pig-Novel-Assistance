@@ -399,9 +399,38 @@
       async function sendTestMessage() { const msg = testInput.value.trim(); if (!msg) return; testMessages.value.push({ role: 'user', content: msg }); testInput.value = ''; isGenerating.value = true; abortController = new AbortController(); const assistantMsg = { role: 'assistant', content: '' }; testMessages.value.push(assistantMsg); try { const res = await fetch(`${API_BASE}/ai/chat/stream`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: testMessages.value.filter(m => m.role !== 'assistant' || m.content !== ''), model: aiConfig.model, temperature: aiConfig.temperature, max_tokens: aiConfig.max_tokens, top_p: aiConfig.top_p, api_key: aiConfig.api_key || undefined, session_id: currentSessionId }), signal: abortController.signal }); const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; while (true) { const { done, value } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || ''; for (const line of lines) { if (line.startsWith('data: ')) { const data = line.slice(6); if (data === '[DONE]') { isGenerating.value = false; return; } try { const parsed = JSON.parse(data); if (parsed.content) assistantMsg.content += parsed.content; if (parsed.session_id) currentSessionId = parsed.session_id; } catch (e) {} } } } } catch (e) { if (e.name !== 'AbortError') showToast('请求失败: ' + e.message, 'error'); } finally { isGenerating.value = false; abortController = null; } }
       async function stopGeneration() { if (abortController) { abortController.abort(); abortController = null; } try { await apiFetch(`${API_BASE}/ai/stop`, { method: 'POST' }); } catch (e) {} isGenerating.value = false; }
       async function sendAiMessage() { const msg = aiInput.value.trim(); if (aiMode.value === 'continue' && !msg) { showToast('续写模式下不能为空', 'error'); return; } aiMessages.value.push({ role: 'user', content: msg || '（空）' }); aiInput.value = ''; setTimeout(() => { aiMessages.value.push({ role: 'assistant', content: `🤖 收到：关于“${msg}”，建议记录到伏笔或角色弧光中～` }); }, 500); nextTick(adjustAiTextareaHeight); }
+      async function triggerFinalize(isReFinal) {
+        if (!currentBook.value || !currentChapterId.value) return;
+
+        // 确保本地内容先存一版
+        await saveChapterSilently();
+
+        try {
+          const ch = chapters.value.find(c => c.id === currentChapterId.value);
+          const payload = {
+              title: editorTitle.value,
+              content: editorContent.value
+          };
+
+          showToast('正在启动AI后台定稿引擎...', 'info');
+          // 调用我们刚刚写好的新接口
+          await apiFetch(`${API_BASE}/books/${currentBook.value}/chapters/${currentChapterId.value}/finalize`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+          });
+
+          // 在前端 UI 上把绿色的“定稿”标贴上
+          if(ch) ch.status = true;
+          showToast(isReFinal ? '重新定稿成功，AI正在重构当前章数据！' : '定稿成功，AI正在提取故事线与向量碎片！', 'success');
+        } catch (e) {
+          showToast('定稿启动失败: ' + e.message, 'error');
+        }
+      }
+
 
       function toggleSaveDropdown() { showSaveDropdown.value = !showSaveDropdown.value; }
-      function handleSave(type) { showSaveDropdown.value = false; if (type === 'final') { manualSave(); } else if (type === 'reFinal') { manualSave(); showToast('已重新定稿', 'success'); } }
+      function handleSave(type) { showSaveDropdown.value = false; if (type === 'final') { triggerFinalize(false); } else if (type === 'reFinal') { triggerFinalize(true); } }
       window.addEventListener('click', (e) => { if (!e.target.closest('.save-dropdown')) showSaveDropdown.value = false; });
 
       watch(activePanel, async (p) => {
