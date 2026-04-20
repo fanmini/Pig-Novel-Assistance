@@ -2,7 +2,7 @@ import json
 import uuid
 
 from flask import Blueprint, request, jsonify, Response
-from finalize_service import run_finalize_pipeline, run_finalize_pipeline_stream
+from finalize_service import  run_finalize_pipeline_stream
 from ai_handler import ai_handler, load_ai_config, save_ai_config
 from base_dao import NovelModel
 
@@ -234,6 +234,32 @@ def update_storylines(book_name):
     if success:
         return jsonify({'message': '更新成功'})
     return jsonify({'error': '更新失败'}), 400
+
+
+# ==================== 势力相关接口 (新增) ====================
+@api_bp.route('/api/books/<book_name>/factions', methods=['GET'])
+def get_factions(book_name):
+    return jsonify(dao.list_factions(book_name))
+
+@api_bp.route('/api/books/<book_name>/factions', methods=['POST'])
+def add_faction(book_name):
+    data = request.json
+    if not data or 'name' not in data:
+        return jsonify({"success": False, "msg": "势力名不能为空"})
+    success = dao.add_faction(book_name, data['name'], data.get('description', ''), data.get('key_figures', []), data.get('history_log', []))
+    return jsonify({"success": success})
+
+@api_bp.route('/api/books/<book_name>/factions/<faction_name>', methods=['PUT'])
+def update_faction(book_name, faction_name):
+    data = request.json
+    success = dao.update_faction(book_name, faction_name, **data)
+    return jsonify({"success": success})
+
+@api_bp.route('/api/books/<book_name>/factions/<faction_name>', methods=['DELETE'])
+def delete_faction(book_name, faction_name):
+    success = dao.delete_faction(book_name, faction_name)
+    return jsonify({"success": success})
+
 
 # ---------- AI相关 ----------
 @api_bp.route('/ai/models', methods=['GET'])

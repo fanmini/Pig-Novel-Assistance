@@ -50,13 +50,13 @@ class NovelModel:
         self._save_json(os.path.join(book_folder, "characters.json"), [])
         self._save_json(os.path.join(book_folder, "foreshadows.json"), [])
         self._save_json(os.path.join(book_folder, "memory_packs.json"), [])
+        self._save_json(os.path.join(book_folder, "factions.json"), [])  # 【新增】势力分布存储
 
-        # 【核心重构：故事线冷启动初始化】
-        # 默认生成一个“故事开始”的大节点，等待第一章为其注入起因内容
+        # 【故事线冷启动初始化】
         default_storylines = [{
             "id": "p_" + str(int(time.time() * 1000)),
             "name": "故事开始",
-            "content": "",  # 初始为空，由第一章提取客观起因填入
+            "content": "",
             "foreshadows": [],
             "is_completed": False,
             "children": []
@@ -67,27 +67,22 @@ class NovelModel:
 
     def get_book(self, name: str) -> Optional[Dict[str, Any]]:
         book_path = os.path.join(self.data_root, name, "book.json")
-        if not os.path.exists(book_path):
-            return None
+        if not os.path.exists(book_path): return None
         return self._load_json(book_path)
 
     def update_book(self, name: str, **kwargs) -> bool:
         book_data = self.get_book(name)
-        if not book_data:
-            return False
+        if not book_data: return False
         allowed = ["description", "sort_order", "meta_list"]
         for key, value in kwargs.items():
-            if key in allowed:
-                book_data[key] = value
-        book_path = os.path.join(self.data_root, name, "book.json")
-        self._save_json(book_path, book_data)
+            if key in allowed: book_data[key] = value
+        self._save_json(os.path.join(self.data_root, name, "book.json"), book_data)
         return True
 
     def rename_book(self, old_name: str, new_name: str) -> bool:
         old_path = os.path.join(self.data_root, old_name)
         new_path = os.path.join(self.data_root, new_name)
-        if not os.path.exists(old_path) or os.path.exists(new_path):
-            return False
+        if not os.path.exists(old_path) or os.path.exists(new_path): return False
         book_data = self.get_book(old_name)
         book_data["name"] = new_name
         self._save_json(os.path.join(old_path, "book.json"), book_data)
@@ -96,8 +91,7 @@ class NovelModel:
 
     def delete_book(self, name: str) -> bool:
         book_folder = os.path.join(self.data_root, name)
-        if not os.path.exists(book_folder):
-            return False
+        if not os.path.exists(book_folder): return False
         shutil.rmtree(book_folder)
         return True
 
@@ -110,88 +104,58 @@ class NovelModel:
             self._save_json(os.path.join(self.data_root, name, "book.json"), book)
         return total
 
-    # ==================== 章节相关操作 ====================
+    # ==================== 章节与分析相关操作 ====================
     def list_chapters(self, book_name: str) -> List[Dict[str, Any]]:
         return self._load_json(os.path.join(self.data_root, book_name, "chapters.json"), [])
 
     def get_chapter(self, book_name: str, chapter_id: int) -> Optional[Dict[str, Any]]:
-        chapters = self.list_chapters(book_name)
-        for ch in chapters:
-            if ch.get("id") == chapter_id:
-                return ch
+        for ch in self.list_chapters(book_name):
+            if ch.get("id") == chapter_id: return ch
         return None
 
     def add_chapter(self, book_name: str, chapter_id: int, title: str, content: str = "", status: bool = False) -> bool:
         chapters = self.list_chapters(book_name)
-        if any(ch.get("id") == chapter_id for ch in chapters):
-            return False
-
+        if any(ch.get("id") == chapter_id for ch in chapters): return False
         word_count = len(content.replace('\r', '').replace('\n', ''))
-        new_chapter = {
-            "id": chapter_id,
-            "title": title,
-            "content": content,
-            "status": status,
-            "word_count": word_count
-        }
-        chapters.append(new_chapter)
+        chapters.append(
+            {"id": chapter_id, "title": title, "content": content, "status": status, "word_count": word_count})
         chapters.sort(key=lambda x: x["id"])
         self._save_json(os.path.join(self.data_root, book_name, "chapters.json"), chapters)
-        if status:
-            self.update_total_words(book_name)
+        if status: self.update_total_words(book_name)
         return True
 
     def update_chapter(self, book_name: str, chapter_id: int, **kwargs) -> bool:
         chapters = self.list_chapters(book_name)
-        target = None
-        for ch in chapters:
-            if ch.get("id") == chapter_id:
-                target = ch
-                break
-        if not target:
-            return False
-
+        target = next((ch for ch in chapters if ch.get("id") == chapter_id), None)
+        if not target: return False
         old_status = target.get("status")
-        if "title" in kwargs:
-            target["title"] = kwargs["title"]
+        if "title" in kwargs: target["title"] = kwargs["title"]
         if "content" in kwargs:
             target["content"] = kwargs["content"]
             target["word_count"] = len(kwargs["content"].replace('\r', '').replace('\n', ''))
-        if "status" in kwargs:
-            target["status"] = kwargs["status"]
-
+        if "status" in kwargs: target["status"] = kwargs["status"]
         self._save_json(os.path.join(self.data_root, book_name, "chapters.json"), chapters)
-
         if "status" in kwargs and old_status != kwargs["status"]:
             self.update_total_words(book_name)
-        elif "content" in kwargs:
-            if target.get("status"):
-                self.update_total_words(book_name)
+        elif "content" in kwargs and target.get("status"):
+            self.update_total_words(book_name)
         return True
 
     def delete_chapter(self, book_name: str, chapter_id: int) -> bool:
         chapters = self.list_chapters(book_name)
         new_chapters = [ch for ch in chapters if ch.get("id") != chapter_id]
-        if len(new_chapters) == len(chapters):
-            return False
+        if len(new_chapters) == len(chapters): return False
         self._save_json(os.path.join(self.data_root, book_name, "chapters.json"), new_chapters)
-
-        analysis_list = self.list_chapter_analyses(book_name)
-        new_analysis = [an for an in analysis_list if an.get("chapter_id") != chapter_id]
-        self._save_json(os.path.join(self.data_root, book_name, "chapter_analysis.json"), new_analysis)
-
+        self.delete_chapter_analysis(book_name, chapter_id)
         self.update_total_words(book_name)
         return True
 
-    # ==================== 章节分析相关操作 ====================
     def list_chapter_analyses(self, book_name: str) -> List[Dict[str, Any]]:
         return self._load_json(os.path.join(self.data_root, book_name, "chapter_analysis.json"), [])
 
     def get_chapter_analysis(self, book_name: str, chapter_id: int) -> Optional[Dict[str, Any]]:
-        analyses = self.list_chapter_analyses(book_name)
-        for an in analyses:
-            if an.get("chapter_id") == chapter_id:
-                return an
+        for an in self.list_chapter_analyses(book_name):
+            if an.get("chapter_id") == chapter_id: return an
         return None
 
     def add_or_update_chapter_analysis(self, book_name: str, chapter_id: int,
@@ -199,67 +163,45 @@ class NovelModel:
                                        story_position: str = "", emotion_intensity: int = 1,
                                        involved_characters: List[str] = None,
                                        bound_main_node_id: str = "", bound_sub_node_id: str = "") -> bool:
-        """【核心重构】加入 bound_main_node_id 和 bound_sub_node_id，实现与故事线的强绑定"""
         analyses = self.list_chapter_analyses(book_name)
-        key_events = key_events or []
-        involved_characters = involved_characters or []
-
-        existing = None
-        for an in analyses:
-            if an.get("chapter_id") == chapter_id:
-                existing = an
-                break
-
+        existing = next((an for an in analyses if an.get("chapter_id") == chapter_id), None)
         data = {
-            "chapter_id": chapter_id,
-            "summary": summary,
-            "key_events": key_events,
-            "story_position": story_position,
-            "emotion_intensity": max(1, min(10, emotion_intensity)),
-            "involved_characters": involved_characters,
-            "bound_main_node_id": bound_main_node_id,
-            "bound_sub_node_id": bound_sub_node_id
+            "chapter_id": chapter_id, "summary": summary, "key_events": key_events or [],
+            "story_position": story_position, "emotion_intensity": max(1, min(10, emotion_intensity)),
+            "involved_characters": involved_characters or [],
+            "bound_main_node_id": bound_main_node_id, "bound_sub_node_id": bound_sub_node_id
         }
-
         if existing:
             existing.update(data)
         else:
             analyses.append(data)
-
         self._save_json(os.path.join(self.data_root, book_name, "chapter_analysis.json"), analyses)
         return True
 
     def delete_chapter_analysis(self, book_name: str, chapter_id: int) -> bool:
         analyses = self.list_chapter_analyses(book_name)
         new_analyses = [an for an in analyses if an.get("chapter_id") != chapter_id]
-        if len(new_analyses) == len(analyses):
-            return False
+        if len(new_analyses) == len(analyses): return False
         self._save_json(os.path.join(self.data_root, book_name, "chapter_analysis.json"), new_analyses)
         return True
 
-    # ==================== 角色、伏笔、记忆包 (省略未改动部分，保持原样即可) ====================
+    # ==================== 角色相关操作 (含级联删除与重命名) ====================
     def list_characters(self, book_name: str) -> List[Dict[str, Any]]:
         return self._load_json(os.path.join(self.data_root, book_name, "characters.json"), [])
 
     def get_character(self, book_name: str, character_name: str) -> Optional[Dict[str, Any]]:
-        characters = self.list_characters(book_name)
-        for ch in characters:
-            if ch.get("character_name") == character_name:
-                return ch
+        for ch in self.list_characters(book_name):
+            if ch.get("character_name") == character_name: return ch
         return None
 
     def add_character(self, book_name: str, character_name: str,
                       importance_level: int = 1, profile: str = "",
-                      relationships: List[Dict[str, str]] = None, change_log: str = "") -> bool:
-        if self.get_character(book_name, character_name):
-            return False
-
+                      relationships: List[Dict[str, Any]] = None, change_log: str = "") -> bool:
+        if self.get_character(book_name, character_name): return False
         new_char = {
-            "character_name": character_name,
-            "importance_level": importance_level,
-            "profile": profile,
-            "relationships": relationships or [],
-            "change_log": change_log
+            "character_name": character_name, "importance_level": importance_level,
+            "profile": profile, "relationships": relationships or [],
+            "change_log": change_log, "arc_history": []  # 弧光历史记录表
         }
         characters = self.list_characters(book_name)
         characters.append(new_char)
@@ -268,36 +210,24 @@ class NovelModel:
 
     def update_character(self, book_name: str, character_name: str, **kwargs) -> bool:
         characters = self.list_characters(book_name)
-        target = None
-        for ch in characters:
-            if ch.get("character_name") == character_name:
-                target = ch
-                break
-        if not target:
-            return False
-
-        allowed = ["importance_level", "profile", "relationships", "change_log"]
+        target = next((ch for ch in characters if ch.get("character_name") == character_name), None)
+        if not target: return False
+        allowed = ["importance_level", "profile", "relationships", "change_log", "arc_history"]
         for key, value in kwargs.items():
-            if key in allowed:
-                target[key] = value
+            if key in allowed: target[key] = value
 
-        # ====== 【新增重构】：支持重命名，并同步更新章节分析里的名字 ======
         new_name = kwargs.get("new_character_name")
         if new_name and new_name != character_name:
             target["character_name"] = new_name
-            # 遍历分析数据，把老名字替换为新名字
             analyses = self.list_chapter_analyses(book_name)
             is_changed = False
             for an in analyses:
                 involved = an.get("involved_characters", [])
                 if character_name in involved:
                     involved.remove(character_name)
-                    if new_name not in involved:
-                        involved.append(new_name)
+                    if new_name not in involved: involved.append(new_name)
                     is_changed = True
-            if is_changed:
-                self._save_json(os.path.join(self.data_root, book_name, "chapter_analysis.json"), analyses)
-        # ================================================================
+            if is_changed: self._save_json(os.path.join(self.data_root, book_name, "chapter_analysis.json"), analyses)
 
         self._save_json(os.path.join(self.data_root, book_name, "characters.json"), characters)
         return True
@@ -305,11 +235,9 @@ class NovelModel:
     def delete_character(self, book_name: str, character_name: str) -> bool:
         characters = self.list_characters(book_name)
         new_chars = [ch for ch in characters if ch.get("character_name") != character_name]
-        if len(new_chars) == len(characters):
-            return False
+        if len(new_chars) == len(characters): return False
         self._save_json(os.path.join(self.data_root, book_name, "characters.json"), new_chars)
 
-        # ====== 【新增重构】：同步清理章节分析里的该角色，实现彻底的级联删除 ======
         analyses = self.list_chapter_analyses(book_name)
         is_changed = False
         for an in analyses:
@@ -317,63 +245,86 @@ class NovelModel:
             if character_name in involved:
                 involved.remove(character_name)
                 is_changed = True
-
-        if is_changed:
-            self._save_json(os.path.join(self.data_root, book_name, "chapter_analysis.json"), analyses)
-        # ======================================================================
-
+        if is_changed: self._save_json(os.path.join(self.data_root, book_name, "chapter_analysis.json"), analyses)
         return True
 
+    # ==================== 势力分布相关操作 (新增) ====================
+    def list_factions(self, book_name: str) -> List[Dict[str, Any]]:
+        return self._load_json(os.path.join(self.data_root, book_name, "factions.json"), [])
+
+    def get_faction(self, book_name: str, name: str) -> Optional[Dict[str, Any]]:
+        for f in self.list_factions(book_name):
+            if f.get("name") == name: return f
+        return None
+
+    def add_faction(self, book_name: str, name: str, description: str = "",
+                    key_figures: List[str] = None, history_log: List[str] = None) -> bool:
+        if self.get_faction(book_name, name): return False
+        factions = self.list_factions(book_name)
+        factions.append({
+            "name": name,
+            "description": description,
+            "key_figures": key_figures or [],
+            "history_log": history_log or []  # 势力动态编年史
+        })
+        self._save_json(os.path.join(self.data_root, book_name, "factions.json"), factions)
+        return True
+
+    def update_faction(self, book_name: str, name: str, **kwargs) -> bool:
+        factions = self.list_factions(book_name)
+        target = next((f for f in factions if f.get("name") == name), None)
+        if not target: return False
+
+        allowed = ["description", "key_figures", "history_log"]
+        for key, value in kwargs.items():
+            if key in allowed: target[key] = value
+
+        new_name = kwargs.get("new_name")
+        if new_name and new_name != name:
+            target["name"] = new_name
+
+        self._save_json(os.path.join(self.data_root, book_name, "factions.json"), factions)
+        return True
+
+    def delete_faction(self, book_name: str, name: str) -> bool:
+        factions = self.list_factions(book_name)
+        new_factions = [f for f in factions if f.get("name") != name]
+        if len(new_factions) == len(factions): return False
+        self._save_json(os.path.join(self.data_root, book_name, "factions.json"), new_factions)
+        return True
+
+    # ==================== 伏笔、记忆包、故事线 ====================
     def list_foreshadows(self, book_name: str) -> List[Dict[str, Any]]:
         return self._load_json(os.path.join(self.data_root, book_name, "foreshadows.json"), [])
 
     def get_foreshadow(self, book_name: str, name: str) -> Optional[Dict[str, Any]]:
-        foreshadows = self.list_foreshadows(book_name)
-        for f in foreshadows:
-            if f.get("name") == name:
-                return f
+        for f in self.list_foreshadows(book_name):
+            if f.get("name") == name: return f
         return None
 
     def add_foreshadow(self, book_name: str, name: str, planted_chapter: int,
                        content: str, revealed_chapter: int = None, status: str = "埋设中") -> bool:
-        if self.get_foreshadow(book_name, name):
-            return False
-
-        new_f = {
-            "name": name,
-            "planted_chapter": planted_chapter,
-            "content": content,
-            "revealed_chapter": revealed_chapter,
-            "status": status
-        }
+        if self.get_foreshadow(book_name, name): return False
         foreshadows = self.list_foreshadows(book_name)
-        foreshadows.append(new_f)
+        foreshadows.append(
+            {"name": name, "planted_chapter": planted_chapter, "content": content, "revealed_chapter": revealed_chapter,
+             "status": status})
         self._save_json(os.path.join(self.data_root, book_name, "foreshadows.json"), foreshadows)
         return True
 
     def update_foreshadow(self, book_name: str, name: str, **kwargs) -> bool:
         foreshadows = self.list_foreshadows(book_name)
-        target = None
-        for f in foreshadows:
-            if f.get("name") == name:
-                target = f
-                break
-        if not target:
-            return False
-
-        allowed = ["planted_chapter", "content", "revealed_chapter", "status"]
+        target = next((f for f in foreshadows if f.get("name") == name), None)
+        if not target: return False
         for key, value in kwargs.items():
-            if key in allowed:
-                target[key] = value
-
+            if key in ["planted_chapter", "content", "revealed_chapter", "status"]: target[key] = value
         self._save_json(os.path.join(self.data_root, book_name, "foreshadows.json"), foreshadows)
         return True
 
     def delete_foreshadow(self, book_name: str, name: str) -> bool:
         foreshadows = self.list_foreshadows(book_name)
         new_fs = [f for f in foreshadows if f.get("name") != name]
-        if len(new_fs) == len(foreshadows):
-            return False
+        if len(new_fs) == len(foreshadows): return False
         self._save_json(os.path.join(self.data_root, book_name, "foreshadows.json"), new_fs)
         return True
 
@@ -381,67 +332,44 @@ class NovelModel:
         return self._load_json(os.path.join(self.data_root, book_name, "memory_packs.json"), [])
 
     def get_memory_pack(self, book_name: str, title: str) -> Optional[Dict[str, Any]]:
-        packs = self.list_memory_packs(book_name)
-        for p in packs:
-            if p.get("title") == title:
-                return p
+        for p in self.list_memory_packs(book_name):
+            if p.get("title") == title: return p
         return None
 
     def add_memory_pack(self, book_name: str, start_chapter_id: int, end_chapter_id: int,
                         title: str, content: str) -> bool:
-        if self.get_memory_pack(book_name, title):
-            return False
-        new_pack = {
-            "start_chapter_id": start_chapter_id,
-            "end_chapter_id": end_chapter_id,
-            "title": title,
-            "content": content
-        }
+        if self.get_memory_pack(book_name, title): return False
         packs = self.list_memory_packs(book_name)
-        packs.append(new_pack)
+        packs.append({"start_chapter_id": start_chapter_id, "end_chapter_id": end_chapter_id, "title": title,
+                      "content": content})
         self._save_json(os.path.join(self.data_root, book_name, "memory_packs.json"), packs)
         return True
 
     def update_memory_pack(self, book_name: str, title: str, **kwargs) -> bool:
         packs = self.list_memory_packs(book_name)
-        target = None
-        for p in packs:
-            if p.get("title") == title:
-                target = p
-                break
-        if not target:
-            return False
-
-        allowed = ["start_chapter_id", "end_chapter_id", "content"]
+        target = next((p for p in packs if p.get("title") == title), None)
+        if not target: return False
         for key, value in kwargs.items():
-            if key in allowed:
-                target[key] = value
-
+            if key in ["start_chapter_id", "end_chapter_id", "content"]: target[key] = value
         self._save_json(os.path.join(self.data_root, book_name, "memory_packs.json"), packs)
         return True
 
     def delete_memory_pack(self, book_name: str, title: str) -> bool:
         packs = self.list_memory_packs(book_name)
         new_packs = [p for p in packs if p.get("title") != title]
-        if len(new_packs) == len(packs):
-            return False
+        if len(new_packs) == len(packs): return False
         self._save_json(os.path.join(self.data_root, book_name, "memory_packs.json"), new_packs)
         return True
 
-    # ==================== 故事线相关操作 ====================
     def list_storylines(self, book_name: str) -> List[Dict[str, Any]]:
-        """获取所有故事线树状列表"""
         return self._load_json(os.path.join(self.data_root, book_name, "storylines.json"), [])
 
     def update_storylines(self, book_name: str, nodes: List[Dict[str, Any]]) -> bool:
-        """更新整棵故事线树"""
         self._save_json(os.path.join(self.data_root, book_name, "storylines.json"), nodes)
         return True
 
-    # ==================== 私有辅助方法 ====================
     def _load_json(self, file_path: str, default=None):
-        if not os.path.exists(file_path):
-            return default if default is not None else {}
+        if not os.path.exists(file_path): return default if default is not None else {}
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -449,5 +377,4 @@ class NovelModel:
             return default if default is not None else {}
 
     def _save_json(self, file_path: str, data: Any) -> None:
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with open(file_path, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=2)

@@ -251,6 +251,67 @@
       const foreshadowsList = ref([]);
       const memoryPacksList = ref([]);
 
+      // ========== 势力状态与方法 ==========
+      const factionsList = ref([]);
+      const showFactionModal = ref(false);
+      const editingFaction = ref(null);
+      const factionForm = reactive({ name: '', description: '', history_log: '' });
+
+      async function loadFactions() {
+          if (!currentBook.value) return;
+          try {
+              const res = await apiFetch(`${API_BASE}/books/${currentBook.value}/factions`);
+              factionsList.value = await res.json();
+          } catch (e) { console.error('加载势力失败', e); }
+      }
+
+      function openFactionModal(faction = null) {
+          editingFaction.value = faction;
+          if (faction) {
+              factionForm.name = faction.name;
+              factionForm.description = faction.description;
+              factionForm.history_log = (faction.history_log || []).join('\n');
+          } else {
+              factionForm.name = ''; factionForm.description = ''; factionForm.history_log = '';
+          }
+          showFactionModal.value = true;
+      }
+
+      async function saveFaction() {
+          if (!factionForm.name.trim()) { showToast('势力名不能为空', 'error'); return; }
+          const payload = {
+              description: factionForm.description,
+              history_log: factionForm.history_log.split('\n').filter(s => s.trim())
+          };
+          const isNew = !editingFaction.value;
+
+          if (isNew) {
+              try {
+                  await apiFetch(`${API_BASE}/books/${currentBook.value}/factions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: factionForm.name, ...payload }) });
+                  await loadFactions(); showToast('势力添加成功', 'success'); showFactionModal.value = false;
+              } catch (e) { showToast('保存失败', 'error'); }
+          } else {
+              const oldName = editingFaction.value.name;
+              const newName = factionForm.name.trim();
+              if (oldName !== newName) {
+                  if (!confirm(`确定将势力“${oldName}”重命名为“${newName}”吗？`)) return;
+                  await apiFetch(`${API_BASE}/books/${currentBook.value}/factions/${oldName}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ new_name: newName, ...payload }) });
+              } else {
+                  await apiFetch(`${API_BASE}/books/${currentBook.value}/factions/${oldName}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+              }
+              await loadFactions(); showToast('势力更新成功', 'success'); showFactionModal.value = false;
+          }
+      }
+
+      async function deleteFaction(name) {
+          if (!confirm(`确定删除势力“${name}”吗？`)) return;
+          try {
+              await apiFetch(`${API_BASE}/books/${currentBook.value}/factions/${name}`, { method: 'DELETE' });
+              await loadFactions(); showToast('删除成功', 'success');
+          } catch (e) { showToast('删除失败', 'error'); }
+      }
+
+
       // 伏笔
       const expandedForeshadowChapters = ref(new Set());
       const groupedForeshadows = computed(() => {
@@ -837,17 +898,61 @@
           </div>
 
           <div class="sidebar-panel" v-show="activePanel === 'characters'">
-            <div class="panel-header"><span>👥 角色</span><div class="panel-header-actions"><span class="icon-btn" @click="loadCharacters">🔄</span><span class="icon-btn" @click="newCharacter">➕</span></div></div>
-            <div class="panel-content">
-              <div v-for="char in sortedCharacters" :key="char.character_name" class="character-card" @click="editCharacter(char)">
-                <div class="character-info"><div class="character-name">[[ char.character_name ]]</div><div class="character-stars">[[ '★'.repeat(char.importance_level || 1) ]]</div></div>
-                <div v-if="deletingItemId?.type === 'character' && deletingItemId.key === char.character_name" class="delete-confirm">
-                  <button class="confirm-yes" @click.stop="confirmDelete('character', char.character_name)">删除</button>
-                  <button class="confirm-no" @click.stop="cancelDelete">取消</button>
+            <div class="panel-header" style="flex-direction: column; align-items: stretch; padding: 0;">
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid #e2e8f0;">
+                    <span>👥 实体档案</span>
+                    <div class="panel-header-actions">
+                        <span class="icon-btn" @click="roleActiveTab === 'characters' ? loadCharacters() : loadFactions()">🔄</span>
+                        <span class="icon-btn" @click="roleActiveTab === 'characters' ? newCharacter() : openFactionModal()">➕</span>
+                    </div>
                 </div>
-                <span v-else class="character-delete" @click.stop="startDelete('character', char.character_name)">✕</span>
+                <div class="kb-tabs" style="border-bottom: none;">
+                    <div class="kb-tab" :class="{active: roleActiveTab === 'characters'}" @click="roleActiveTab = 'characters'">👤 角色档案</div>
+                    <div class="kb-tab" :class="{active: roleActiveTab === 'factions'}" @click="roleActiveTab = 'factions'">🏛️ 势力分布</div>
+                </div>
+            </div>
+
+            <div class="panel-content">
+              <div v-show="roleActiveTab === 'characters'">
+                  <div v-for="char in sortedCharacters" :key="char.character_name" class="character-card" @click="editCharacter(char)">
+                    <div class="character-info">
+                        <div class="character-name">[[ char.character_name ]]</div>
+                        <div class="character-stars">[[ '★'.repeat(char.importance_level || 1) ]]</div>
+                        <div style="margin-top: 6px; font-size: 12px; color: #475569;">
+                            <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><strong>快照：</strong>[[ char.profile || '暂无设定' ]]</div>
+                            <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">
+                                <strong>近期弧光：</strong>
+                                <span v-if="char.arc_history && char.arc_history.length">[[ char.arc_history[char.arc_history.length - 1].arc_summary ]]</span>
+                                <span v-else>暂无变动</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-if="deletingItemId?.type === 'character' && deletingItemId.key === char.character_name" class="delete-confirm">
+                      <button class="confirm-yes" @click.stop="confirmDelete('character', char.character_name)">删除</button>
+                      <button class="confirm-no" @click.stop="cancelDelete">取消</button>
+                    </div>
+                    <span v-else class="character-delete" style="margin-left: auto; cursor: pointer; color: #94a3b8; padding: 4px;" @click.stop="startDelete('character', char.character_name)">✕</span>
+                  </div>
+                  <div v-if="!charactersList.length" style="padding:12px;color:#94a3b8;text-align:center;">暂无角色</div>
               </div>
-              <div v-if="!charactersList.length" style="padding:12px;color:#94a3b8;text-align:center;">暂无角色</div>
+
+              <div v-show="roleActiveTab === 'factions'">
+                  <div v-for="fac in factionsList" :key="fac.name" class="character-card" @click="openFactionModal(fac)">
+                      <div class="character-info">
+                          <div class="character-name">[[ fac.name ]]</div>
+                          <div style="margin-top: 6px; font-size: 12px; color: #475569;">
+                              <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><strong>宗旨：</strong>[[ fac.description || '暂无说明' ]]</div>
+                              <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">
+                                  <strong>动态：</strong>
+                                  <span v-if="fac.history_log && fac.history_log.length">[[ fac.history_log[fac.history_log.length - 1] ]]</span>
+                                  <span v-else>暂无变动</span>
+                              </div>
+                          </div>
+                      </div>
+                      <span class="character-delete" style="margin-left: auto; cursor: pointer; color: #94a3b8; padding: 4px;" @click.stop="deleteFaction(fac.name)">✕</span>
+                  </div>
+                  <div v-if="!factionsList.length" style="padding:12px;color:#94a3b8;text-align:center;">暂无势力</div>
+              </div>
             </div>
           </div>
 
