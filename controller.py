@@ -237,11 +237,11 @@ def update_storylines(book_name):
 
 
 # ==================== 势力相关接口 (新增) ====================
-@api_bp.route('/api/books/<book_name>/factions', methods=['GET'])
+@api_bp.route('/books/<book_name>/factions', methods=['GET'])
 def get_factions(book_name):
     return jsonify(dao.list_factions(book_name))
 
-@api_bp.route('/api/books/<book_name>/factions', methods=['POST'])
+@api_bp.route('/books/<book_name>/factions', methods=['POST'])
 def add_faction(book_name):
     data = request.json
     if not data or 'name' not in data:
@@ -249,13 +249,13 @@ def add_faction(book_name):
     success = dao.add_faction(book_name, data['name'], data.get('description', ''), data.get('key_figures', []), data.get('history_log', []))
     return jsonify({"success": success})
 
-@api_bp.route('/api/books/<book_name>/factions/<faction_name>', methods=['PUT'])
+@api_bp.route('/books/<book_name>/factions/<faction_name>', methods=['PUT'])
 def update_faction(book_name, faction_name):
     data = request.json
     success = dao.update_faction(book_name, faction_name, **data)
     return jsonify({"success": success})
 
-@api_bp.route('/api/books/<book_name>/factions/<faction_name>', methods=['DELETE'])
+@api_bp.route('/books/<book_name>/factions/<faction_name>', methods=['DELETE'])
 def delete_faction(book_name, faction_name):
     success = dao.delete_faction(book_name, faction_name)
     return jsonify({"success": success})

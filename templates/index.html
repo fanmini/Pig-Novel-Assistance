@@ -251,6 +251,7 @@
       const foreshadowsList = ref([]);
       const memoryPacksList = ref([]);
 
+      const roleActiveTab = ref('characters');
       // ========== 势力状态与方法 ==========
       const factionsList = ref([]);
       const showFactionModal = ref(false);
@@ -261,7 +262,7 @@
           if (!currentBook.value) return;
           try {
               const res = await apiFetch(`${API_BASE}/books/${currentBook.value}/factions`);
-              factionsList.value = await res.json();
+              factionsList.value = res;
           } catch (e) { console.error('加载势力失败', e); }
       }
 
@@ -435,8 +436,15 @@
 
       watch(currentBook, async (newBook, oldBook) => {
         if (oldBook && editMode.value === 'chapter' && currentChapterId.value) await saveChapterSilently();
-        if (newBook) { await loadChapters(); await loadBookDetails(); await loadCharacters(); await loadForeshadows(); await loadMemoryPacks(); await loadStorylines(); }
-        else { chapters.value = []; currentChapterId.value = null; bookDetails.value = {}; charactersList.value = []; foreshadowsList.value = []; memoryPacksList.value = []; storylineNodes.value = []; }
+        if (newBook) {
+            await loadChapters(); await loadBookDetails(); await loadCharacters();
+            await loadForeshadows(); await loadMemoryPacks(); await loadStorylines();
+            await loadFactions(); // 【修复补充】：切换书籍时加载势力
+        } else {
+            chapters.value = []; currentChapterId.value = null; bookDetails.value = {};
+            charactersList.value = []; foreshadowsList.value = []; memoryPacksList.value = [];
+            storylineNodes.value = []; factionsList.value = []; // 清空势力
+        }
         editMode.value = 'chapter'; editingMeta.value = null; editingCharacter.value = null; editingStorylineNode.value = null;
         updateEditorFromChapter();
       });
@@ -698,6 +706,12 @@
       loadBooks();
 
       return {
+        roleActiveTab, factionsList, showFactionModal, editingFaction, factionForm,
+        loadFactions, openFactionModal, saveFaction, deleteFaction,
+        viewingFsDetail, viewForeshadowDetail, isActiveStorylineNode, getNodeNamesForChapter,
+        expandedForeshadowChapters, groupedForeshadows, toggleFsExpand,
+        toasts, showToast,
+        books, currentBook, chapters, currentChapterId, isEditingBookName, newBookName,
         viewingFsDetail, viewForeshadowDetail, isActiveStorylineNode, getNodeNamesForChapter,
         expandedForeshadowChapters, groupedForeshadows, toggleFsExpand,
         toasts, showToast,
