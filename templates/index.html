@@ -160,6 +160,11 @@
         .tl-item.child-item.active .tl-content { border-left-color: #3b82f6; background: #eef2ff; color: #1e293b; }
         .tl-item.child-item:hover .tl-content { background: #f1f5f9; border-left-color: #94a3b8; }
         .tl-item.child-item .tl-dot { width: 8px; height: 8px; left: 5px; top: 8px; } /* 小圆点 */
+
+        .tl-dot.completed-dot { background: #10b981; border-color: #10b981; }
+        /* 新增：当前正在进行中的节点，给一个醒目的蓝色光晕 */
+        .tl-dot.active-dot { background: #3b82f6; border-color: #3b82f6; box-shadow: 0 0 0 4px rgba(59,130,246,0.2); z-index: 2; }
+
         /* ========================================= */
 
         .ai-sidebar { width: 325px; background: #fff; border-left: 1px solid #e9eef3; display: flex; flex-direction: column; flex-shrink: 0; margin: 8px 8px 8px 0; border-radius: 20px; overflow: hidden; }
@@ -273,6 +278,37 @@
       // 故事线管理
       const storylineNodes = ref([]);
       const editingStorylineNode = ref(null);
+
+      // 【新增】伏笔详情查看状态
+      const viewingFsDetail = ref(null);
+      function viewForeshadowDetail(name) {
+          const fs = foreshadowsList.value.find(f => f.name === name);
+          if (fs) viewingFsDetail.value = fs;
+          else showToast('当前伏笔暂无详细信息', 'info');
+      }
+
+      // 【新增】判断节点是否为“当前进行中的活跃节点”
+      function isActiveStorylineNode(nodeId) {
+          const flat = [];
+          storylineNodes.value.forEach(p => { flat.push(p); if(p.children) flat.push(...p.children); });
+          // 找到第一个未完成的节点，就是当前的 active 节点
+          const activeNode = flat.find(x => !x.is_completed);
+          return activeNode && activeNode.id === nodeId;
+      }
+
+      // 【新增】根据章节ID，反向查找大节点和小节点的名称，用于分析模块展示
+      function getNodeNamesForChapter(chapterId) {
+          const analysis = getAnalysis(chapterId);
+          if (!analysis || !analysis.bound_main_node_id) return null;
+          let mainName = '未知大卷', subName = '未知事件';
+          const mainNode = storylineNodes.value.find(p => p.id === analysis.bound_main_node_id);
+          if (mainNode) {
+              mainName = mainNode.name;
+              const subNode = mainNode.children?.find(c => c.id === analysis.bound_sub_node_id);
+              if (subNode) subName = subNode.name;
+          }
+          return `${mainName} ➔ ${subName}`;
+      }
 
       // 新增：管理伏笔的多选弹窗状态
       const fsModal = reactive({ visible: false, selected: [], newName: '' });
@@ -427,7 +463,49 @@
       const sortedCharacters = computed(() => [...charactersList.value].sort((a,b) => (b.importance_level||0) - (a.importance_level||0)));
       function newCharacter() { editingCharacter.value = null; charForm.name = ''; charForm.importance_level = 1; charForm.change_log = ''; charForm.relationships = ''; charForm.profile = ''; editMode.value = 'character'; }
       function editCharacter(char) { editingCharacter.value = { ...char }; charForm.name = char.character_name; charForm.importance_level = char.importance_level || 1; charForm.change_log = char.change_log || ''; charForm.relationships = Array.isArray(char.relationships) ? char.relationships.join('\n') : (char.relationships || ''); charForm.profile = char.profile || ''; editMode.value = 'character'; }
-      async function saveCharacter() { if (!charForm.name.trim()) { showToast('角色名不能为空', 'error'); return; } const payload = { importance_level: charForm.importance_level, change_log: charForm.change_log, relationships: charForm.relationships.split('\n').map(s => s.trim()).filter(s => s), profile: charForm.profile }; const isNew = !editingCharacter.value; if (isNew) { try { await apiFetch(`${API_BASE}/books/${currentBook.value}/characters`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ character_name: charForm.name, ...payload }) }); await loadCharacters(); showToast('保存成功', 'success'); editingCharacter.value = { character_name: charForm.name, ...payload }; } catch (e) { showToast('保存失败: '+e.message, 'error'); } } else { const oldName = editingCharacter.value.character_name; const newName = charForm.name.trim(); if (oldName !== newName) { if (!confirm(`确定将角色“${oldName}”重命名为“${newName}”吗？`)) return; try { await apiFetch(`${API_BASE}/books/${currentBook.value}/characters/${oldName}`, { method: 'DELETE' }); await apiFetch(`${API_BASE}/books/${currentBook.value}/characters`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ character_name: newName, ...payload }) }); await loadCharacters(); showToast('重命名成功', 'success'); editingCharacter.value = { character_name: newName, ...payload }; } catch (e) { showToast('重命名失败: '+e.message, 'error'); await loadCharacters(); } } else { try { await apiFetch(`${API_BASE}/books/${currentBook.value}/characters/${oldName}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadCharacters(); showToast('保存成功', 'success'); Object.assign(editingCharacter.value, payload); } catch (e) { showToast('保存失败: '+e.message, 'error'); } } } }
+      async function saveCharacter() {
+          if (!charForm.name.trim()) { showToast('角色名不能为空', 'error'); return; }
+          const payload = { importance_level: charForm.importance_level, change_log: charForm.change_log, relationships: charForm.relationships.split('\n').map(s => s.trim()).filter(s => s), profile: charForm.profile };
+          const isNew = !editingCharacter.value;
+
+          if (isNew) {
+              try {
+                  await apiFetch(`${API_BASE}/books/${currentBook.value}/characters`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ character_name: charForm.name, ...payload }) });
+                  await loadCharacters();
+                  showToast('保存成功', 'success');
+                  editingCharacter.value = { character_name: charForm.name, ...payload };
+              } catch (e) { showToast('保存失败: '+e.message, 'error'); }
+          } else {
+              const oldName = editingCharacter.value.character_name;
+              const newName = charForm.name.trim();
+
+              if (oldName !== newName) {
+                  if (!confirm(`确定将角色“${oldName}”重命名为“${newName}”吗？`)) return;
+                  try {
+                      // 【核心重构】：抛弃原本的 DELETE+POST 危险组合，直接调 PUT 告诉后端安全改名！
+                      await apiFetch(`${API_BASE}/books/${currentBook.value}/characters/${oldName}`, {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ new_character_name: newName, ...payload })
+                      });
+
+                      await loadCharacters();
+                      showToast('重命名成功', 'success');
+                      editingCharacter.value = { character_name: newName, ...payload };
+                  } catch (e) {
+                      showToast('重命名失败: '+e.message, 'error');
+                      await loadCharacters();
+                  }
+              } else {
+                  try {
+                      await apiFetch(`${API_BASE}/books/${currentBook.value}/characters/${oldName}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                      await loadCharacters();
+                      showToast('保存成功', 'success');
+                      Object.assign(editingCharacter.value, payload);
+                  } catch (e) { showToast('保存失败: '+e.message, 'error'); }
+              }
+          }
+      }
       async function deleteCharacter(name) { try { await apiFetch(`${API_BASE}/books/${currentBook.value}/characters/${name}`, { method: 'DELETE' }); await loadCharacters(); showToast('已删除', 'success'); deletingItemId.value = null; } catch (e) { showToast('删除失败', 'error'); } }
       function cancelEditCharacter() { editMode.value = 'chapter'; editingCharacter.value = null; updateEditorFromChapter(); }
       function startDelete(type, key) { deletingItemId.value = { type, key }; }
@@ -559,6 +637,7 @@
       loadBooks();
 
       return {
+        viewingFsDetail, viewForeshadowDetail, isActiveStorylineNode, getNodeNamesForChapter,
         expandedForeshadowChapters, groupedForeshadows, toggleFsExpand,
         toasts, showToast,
         books, currentBook, chapters, currentChapterId, isEditingBookName, newBookName,
@@ -655,7 +734,18 @@
                 <div v-if="expandedChapters.has(ch.id)" class="analysis-detail">
                   <div class="analysis-field-row"><span class="field-label-text">摘要</span><div class="field-content"><span>[[ getAnalysis(ch.id).summary || '暂无' ]]</span><span class="edit-pencil" @click.stop="openEditModal(ch.id, 'summary', getAnalysis(ch.id).summary)">✎</span></div></div>
                   <div class="analysis-field-row"><span class="field-label-text">角色</span><div class="field-content"><span>[[ getAnalysis(ch.id).involved_characters?.join('、') || '暂无' ]]</span><span class="edit-pencil" @click.stop="openRoleModal(ch.id)">✎</span></div></div>
-                  <div class="analysis-field-row"><span class="field-label-text">故事进度</span><div class="field-content"><span>[[ getAnalysis(ch.id).story_position || '暂无' ]]</span><span class="edit-pencil" @click.stop="openEditModal(ch.id, 'story_position', getAnalysis(ch.id).story_position)">✎</span></div></div>
+                  <div class="analysis-field-row">
+                      <span class="field-label-text">故事进度</span>
+                      <div class="field-content" style="flex-direction: column;">
+                          <span v-if="getNodeNamesForChapter(ch.id)" style="font-size:11px; background:#e0f2fe; color:#0284c7; padding:2px 8px; border-radius:12px; margin-bottom:4px; display:inline-block; width:fit-content; border: 1px solid #bae6fd;">
+                              📍 [[ getNodeNamesForChapter(ch.id) ]]
+                          </span>
+                          <div style="display:flex; justify-content:space-between; width:100%;">
+                              <span>[[ getAnalysis(ch.id).story_position || '暂无' ]]</span>
+                              <span class="edit-pencil" @click.stop="openEditModal(ch.id, 'story_position', getAnalysis(ch.id).story_position)">✎</span>
+                          </div>
+                      </div>
+                  </div>
                   <div class="analysis-field-row"><span class="field-label-text">情感强度</span><div class="field-content"><span>[[ getAnalysis(ch.id).emotion_intensity || 1 ]] / 10</span><span class="edit-pencil" @click.stop="openEditModal(ch.id, 'emotion_intensity', getAnalysis(ch.id).emotion_intensity)">✎</span></div></div>
                   <div class="analysis-field-row"><span class="field-label-text">事件</span><div class="field-content" style="display:block"><div v-if="getAnalysis(ch.id).key_events?.length"><div v-for="(ev,idx) in getAnalysis(ch.id).key_events" class="event-item"><span class="event-index">[[ idx+1 ]].</span><span class="event-text">[[ ev ]]</span><span class="edit-pencil" @click.stop="openEditModal(ch.id, 'key_events', getAnalysis(ch.id).key_events)">✎</span></div></div><div v-else style="color:#94a3b8;">暂无事件</div><button class="add-event-btn" @click.stop="addKeyEvent(ch.id)">+ 添加事件</button></div></div>
                 </div>
@@ -723,7 +813,7 @@
                     <div v-for="pNode in storylineNodes" :key="pNode.id">
                         <div class="tl-item" :class="{'active': editingStorylineNode?.id === pNode.id}" @click="editStorylineNode(pNode)">
                             <div class="tl-tail" v-show="!isLastNode(pNode.id)" :class="{'completed-tail': isTailCompleted(pNode.id)}"></div>
-                            <div class="tl-dot parent-dot" :class="{'completed-dot': pNode.is_completed}"></div>
+                            <div class="tl-dot parent-dot" :class="{'completed-dot': pNode.is_completed, 'active-dot': isActiveStorylineNode(pNode.id)}"></div>
                             <div class="tl-content">
                                 <strong style="flex:1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">[[ pNode.name || '未命名大节点' ]]</strong>
                                 <span class="icon-btn" style="width:20px;height:20px;font-size:12px;margin-right:4px;" @click.stop="addChildStoryline(pNode)" title="添加小节点">➕</span>
@@ -732,7 +822,7 @@
                         </div>
                         <div v-for="cNode in pNode.children" :key="cNode.id" class="tl-item child-item" :class="{'active': editingStorylineNode?.id === cNode.id}" @click="editStorylineNode(cNode)">
                             <div class="tl-tail" v-show="!isLastNode(cNode.id)" :class="{'completed-tail': isTailCompleted(cNode.id)}"></div>
-                            <div class="tl-dot child-dot" :class="{'completed-dot': cNode.is_completed}"></div>
+                            <div class="tl-dot child-dot" :class="{'completed-dot': cNode.is_completed, 'active-dot': isActiveStorylineNode(cNode.id)}"></div>
                             <div class="tl-content">
                                 <span style="flex:1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">[[ cNode.name || '未命名小节点' ]]</span>
                                 <span class="kb-item-delete" style="margin:0;" @click.stop="deleteStorylineNode(cNode.id, pNode.id)">✕</span>
@@ -822,8 +912,8 @@
                       <div class="editor-field">
                           <label>关联伏笔</label>
                           <div class="role-tags" v-if="editingStorylineNode.foreshadows?.length">
-                              <span v-for="(f, idx) in editingStorylineNode.foreshadows" :key="idx" class="role-tag selected">
-                                  [[ f ]] <span @click.stop="editingStorylineNode.foreshadows.splice(idx, 1)" style="margin-left:6px;cursor:pointer">✕</span>
+                              <span v-for="(f, idx) in editingStorylineNode.foreshadows" :key="idx" class="role-tag selected" @click="viewForeshadowDetail(f)">
+                                  [[ f ]] <span @click.stop="editingStorylineNode.foreshadows.splice(idx, 1)" style="margin-left:6px;cursor:pointer" title="移除关联">✕</span>
                               </span>
                           </div>
                           <div v-else style="color:#94a3b8;font-size:12px;margin-bottom:8px;">暂无关联伏笔</div>
@@ -918,6 +1008,26 @@
             </div>
           </div>
         </div>
+
+        <div v-if="viewingFsDetail" class="modal-overlay" @click.self="viewingFsDetail = null">
+            <div class="modal">
+                <h3 style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>🎭 伏笔详情：[[ viewingFsDetail.name ]]</span>
+                    <span style="font-size:12px; background:#eef2ff; color:#3b82f6; padding:4px 10px; border-radius:12px; font-weight:normal;">[[ viewingFsDetail.status ]]</span>
+                </h3>
+                <div style="margin-bottom:16px; font-size:13px; color:#64748b;">
+                    📍 埋设于：第 [[ viewingFsDetail.planted_chapter ]] 章
+                    <span v-if="viewingFsDetail.revealed_chapter"> | 🔓 揭示于：第 [[ viewingFsDetail.revealed_chapter ]] 章</span>
+                </div>
+                <div style="background:#f8fafc; padding:16px; border-radius:12px; line-height:1.6; font-size:14px; color:#1e293b; min-height:80px; white-space:pre-wrap; border: 1px solid #e2e8f0;">
+                    [[ viewingFsDetail.content || '暂无详细描述' ]]
+                </div>
+                <div class="modal-actions" style="margin-top: 24px;">
+                    <button class="modal-btn primary" @click="viewingFsDetail = null">我知道了</button>
+                </div>
+            </div>
+        </div>
+
       </div>
     `
   });

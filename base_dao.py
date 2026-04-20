@@ -1,7 +1,9 @@
 import os
 import json
 import shutil
+import time
 from typing import List, Dict, Any, Optional
+
 
 class NovelModel:
     """基于文件系统的小说数据管理层"""
@@ -48,7 +50,18 @@ class NovelModel:
         self._save_json(os.path.join(book_folder, "characters.json"), [])
         self._save_json(os.path.join(book_folder, "foreshadows.json"), [])
         self._save_json(os.path.join(book_folder, "memory_packs.json"), [])
-        self._save_json(os.path.join(book_folder, "storylines.json"), []) # 新增故事线文件
+
+        # 【核心重构：故事线冷启动初始化】
+        # 默认生成一个“故事开始”的大节点，等待第一章为其注入起因内容
+        default_storylines = [{
+            "id": "p_" + str(int(time.time() * 1000)),
+            "name": "故事开始",
+            "content": "",  # 初始为空，由第一章提取客观起因填入
+            "foreshadows": [],
+            "is_completed": False,
+            "children": []
+        }]
+        self._save_json(os.path.join(book_folder, "storylines.json"), default_storylines)
 
         return True
 
@@ -184,7 +197,9 @@ class NovelModel:
     def add_or_update_chapter_analysis(self, book_name: str, chapter_id: int,
                                        summary: str = "", key_events: List[str] = None,
                                        story_position: str = "", emotion_intensity: int = 1,
-                                       involved_characters: List[str] = None) -> bool:
+                                       involved_characters: List[str] = None,
+                                       bound_main_node_id: str = "", bound_sub_node_id: str = "") -> bool:
+        """【核心重构】加入 bound_main_node_id 和 bound_sub_node_id，实现与故事线的强绑定"""
         analyses = self.list_chapter_analyses(book_name)
         key_events = key_events or []
         involved_characters = involved_characters or []
@@ -201,7 +216,9 @@ class NovelModel:
             "key_events": key_events,
             "story_position": story_position,
             "emotion_intensity": max(1, min(10, emotion_intensity)),
-            "involved_characters": involved_characters
+            "involved_characters": involved_characters,
+            "bound_main_node_id": bound_main_node_id,
+            "bound_sub_node_id": bound_sub_node_id
         }
 
         if existing:
@@ -220,7 +237,7 @@ class NovelModel:
         self._save_json(os.path.join(self.data_root, book_name, "chapter_analysis.json"), new_analyses)
         return True
 
-    # ==================== 角色相关操作 ====================
+    # ==================== 角色、伏笔、记忆包 (省略未改动部分，保持原样即可) ====================
     def list_characters(self, book_name: str) -> List[Dict[str, Any]]:
         return self._load_json(os.path.join(self.data_root, book_name, "characters.json"), [])
 
@@ -264,6 +281,24 @@ class NovelModel:
             if key in allowed:
                 target[key] = value
 
+        # ====== 【新增重构】：支持重命名，并同步更新章节分析里的名字 ======
+        new_name = kwargs.get("new_character_name")
+        if new_name and new_name != character_name:
+            target["character_name"] = new_name
+            # 遍历分析数据，把老名字替换为新名字
+            analyses = self.list_chapter_analyses(book_name)
+            is_changed = False
+            for an in analyses:
+                involved = an.get("involved_characters", [])
+                if character_name in involved:
+                    involved.remove(character_name)
+                    if new_name not in involved:
+                        involved.append(new_name)
+                    is_changed = True
+            if is_changed:
+                self._save_json(os.path.join(self.data_root, book_name, "chapter_analysis.json"), analyses)
+        # ================================================================
+
         self._save_json(os.path.join(self.data_root, book_name, "characters.json"), characters)
         return True
 
@@ -273,9 +308,22 @@ class NovelModel:
         if len(new_chars) == len(characters):
             return False
         self._save_json(os.path.join(self.data_root, book_name, "characters.json"), new_chars)
+
+        # ====== 【新增重构】：同步清理章节分析里的该角色，实现彻底的级联删除 ======
+        analyses = self.list_chapter_analyses(book_name)
+        is_changed = False
+        for an in analyses:
+            involved = an.get("involved_characters", [])
+            if character_name in involved:
+                involved.remove(character_name)
+                is_changed = True
+
+        if is_changed:
+            self._save_json(os.path.join(self.data_root, book_name, "chapter_analysis.json"), analyses)
+        # ======================================================================
+
         return True
 
-    # ==================== 伏笔相关操作 ====================
     def list_foreshadows(self, book_name: str) -> List[Dict[str, Any]]:
         return self._load_json(os.path.join(self.data_root, book_name, "foreshadows.json"), [])
 
@@ -329,7 +377,6 @@ class NovelModel:
         self._save_json(os.path.join(self.data_root, book_name, "foreshadows.json"), new_fs)
         return True
 
-    # ==================== 区间记忆包相关操作 ====================
     def list_memory_packs(self, book_name: str) -> List[Dict[str, Any]]:
         return self._load_json(os.path.join(self.data_root, book_name, "memory_packs.json"), [])
 

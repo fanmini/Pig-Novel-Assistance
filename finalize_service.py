@@ -3,19 +3,19 @@ import json
 import queue
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from base_dao import NovelModel
 from ai_handler import ai_handler, load_ai_config
 from vector_dao import vector_dao
-from prompts.chapter_analysis import PROMPT_CHAPTER_ANALYSIS, PROMPT_VECTOR_TAGS
+from prompts.chapter_analysis import PROMPT_CHAPTER_ANALYSIS_COLD_START, PROMPT_CHAPTER_ANALYSIS_NORMAL, \
+    PROMPT_VECTOR_TAGS
 
 dao = NovelModel()
-# 创建一个全局线程池
 executor = ThreadPoolExecutor(max_workers=5)
 
 
 def clean_json_string(text: str) -> dict:
-    """清理大模型可能带有的 markdown 代码块，并解析为字典"""
     match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
     if match:
         text = match.group(1)
@@ -26,179 +26,266 @@ def clean_json_string(text: str) -> dict:
 
 
 def task_knowledge_analysis(book_name: str, chapter_id: int, content: str):
-    """线程A：分析摘要、角色、情感、故事线状态机"""
     book = dao.get_book(book_name)
-    chapters = dao.list_chapters(book_name)
     storylines = dao.list_storylines(book_name)
     characters = dao.list_characters(book_name)
+    analyses = dao.list_chapter_analyses(book_name)
+    ai_config = load_ai_config()
 
-    # 1. 获取上一章摘要（解决盲区：如果是第1章则为空）
-    prev_summary = "（这是本书第一章，暂无前情提要，请重点分析开局设定。）"
-    if chapter_id > 1:
-        prev_analysis = dao.get_chapter_analysis(book_name, chapter_id - 1)
-        if prev_analysis and prev_analysis.get('summary'):
-            prev_summary = prev_analysis['summary']
+    if chapter_id == 1:
+        prompt = PROMPT_CHAPTER_ANALYSIS_COLD_START.format(
+            book_desc=book.get('description', '暂无简介'),
+            content=content
+        )
+        response = ai_handler.chat(
+            messages=[{"role": "user", "content": prompt}],
+            model=ai_config.get('model', 'openai/gpt-4o-mini'),
+            api_key=ai_config.get('api_key', ''),
+            temperature=0.2
+        )
+        ai_json = clean_json_string(response.choices[0].message.content)
+        if not ai_json: return
 
-    # 2. 提取当前未完成的故事线
-    uncompleted_nodes = []
-    for p in storylines:
+        action_data = ai_json.get('storyline_action', {})
+        main_id = storylines[0]['id'] if storylines else "p_" + str(int(time.time() * 1000))
+        sub_id = "c_" + str(int(time.time() * 1000) + 1)
+
+        if storylines:
+            storylines[0]['content'] = action_data.get('main_node_content', '初始起因')
+            storylines[0]['children'] = [{
+                "id": sub_id,
+                "name": action_data.get('sub_node_name', '初始事件'),
+                "content": action_data.get('sub_node_content', '事件起因'),
+                "foreshadows": [],
+                "is_completed": False
+            }]
+        dao.update_storylines(book_name, storylines)
+        _save_analysis_and_entities(book_name, chapter_id, ai_json, characters, main_id, sub_id,
+                                    action_data.get('progress_desc', ''))
+        return
+
+    # === 寻找当前活跃节点 ===
+    active_main = None
+    active_sub = None
+    active_main_idx = -1
+    active_sub_idx = -1
+
+    for i, p in enumerate(storylines):
         if not p.get('is_completed'):
-            uncompleted_nodes.append(f"大节点: {p.get('name')}")
-            for c in p.get('children', []):
+            active_main = p
+            active_main_idx = i
+            for j, c in enumerate(p.get('children', [])):
                 if not c.get('is_completed'):
-                    uncompleted_nodes.append(f"  - 小节点: {c.get('name')}")
+                    active_sub = c
+                    active_sub_idx = j
+                    break
+            break
 
-    # 3. 组装 Prompt 并调用 AI
-    prompt = PROMPT_CHAPTER_ANALYSIS.format(
-        book_desc=book.get('description', ''),
+    if not active_main and storylines:
+        active_main = storylines[-1]
+        active_main_idx = len(storylines) - 1
+        if active_main.get('children'):
+            active_sub = active_main['children'][-1]
+            active_sub_idx = len(active_main['children']) - 1
+
+    active_main_id = active_main['id'] if active_main else ""
+    active_sub_id = active_sub['id'] if active_sub else ""
+
+    # === 提取宏观主干 ===
+    macro_storyline_lines = []
+    for p in storylines:
+        macro_storyline_lines.append(f"卷/大节点：【{p.get('name')}】 - 背景事实：{p.get('content')}")
+        for c in p.get('children', []):
+            macro_storyline_lines.append(f"  小节点：【{c.get('name')}】 - 核心事实：{c.get('content')}")
+            if c.get('id') == active_sub_id:
+                break
+        if p.get('id') == active_main_id:
+            break
+    macro_storyline_text = "\n".join(macro_storyline_lines)
+
+    # === 提取未来预设视野（作者提前规划的大纲） ===
+    upcoming_lines = []
+    if active_main:
+        # 当前大节点下的剩余预设小节点
+        for c in active_main.get('children', [])[active_sub_idx + 1:]:
+            upcoming_lines.append(f"  预设小节点：【{c.get('name')}】")
+        # 之后的预设大节点
+        for p in storylines[active_main_idx + 1:]:
+            upcoming_lines.append(f"预设大卷：【{p.get('name')}】")
+            for c in p.get('children', []):
+                upcoming_lines.append(f"  预设小节点：【{c.get('name')}】")
+            # 为防爆，只提取未来最近的2个大节点即可
+            if len(upcoming_lines) > 6:
+                break
+    upcoming_storyline_text = "\n".join(upcoming_lines) if upcoming_lines else "（暂无作者预设的未来节点）"
+
+    # === 提取局部进度与摘要 ===
+    current_node_progress_lines = []
+    for an in sorted(analyses, key=lambda x: x.get('chapter_id', 0)):
+        if an.get('bound_sub_node_id') == active_sub_id:
+            current_node_progress_lines.append(f"第{an['chapter_id']}章进度：{an.get('story_position', '')}")
+    current_node_progress_text = "\n".join(
+        current_node_progress_lines) if current_node_progress_lines else "（该节点刚刚开启，暂无前置进度）"
+
+    prev_summary = "暂无"
+    prev_an = dao.get_chapter_analysis(book_name, chapter_id - 1)
+    if prev_an and prev_an.get('summary'):
+        prev_summary = prev_an['summary']
+
+    prompt = PROMPT_CHAPTER_ANALYSIS_NORMAL.format(
+        macro_storyline=macro_storyline_text,
+        current_main_name=active_main.get('name') if active_main else "未知",
+        current_sub_name=active_sub.get('name') if active_sub else "未知",
+        current_node_progress=current_node_progress_text,
+        upcoming_storyline=upcoming_storyline_text,
         prev_summary=prev_summary,
-        characters=", ".join([c['character_name'] for c in characters]),
-        uncompleted_storyline="\n".join(
-            uncompleted_nodes) if uncompleted_nodes else "（空，请直接创建第一个大节点和小节点）",
+        characters=", ".join([c['character_name'] for c in characters]) or "暂无已知角色",
+        current_main_id=active_main_id,
+        current_sub_id=active_sub_id,
         content=content
     )
-
-    # 读取用户在前端保存的 AI 配置
-    ai_config = load_ai_config()
 
     response = ai_handler.chat(
         messages=[{"role": "user", "content": prompt}],
         model=ai_config.get('model', 'openai/gpt-4o-mini'),
         api_key=ai_config.get('api_key', ''),
-        temperature=0.3  # 分析类任务建议把温度调低，避免 AI 瞎编
+        temperature=0.2
     )
     ai_json = clean_json_string(response.choices[0].message.content)
+    if not ai_json: return
 
-    if not ai_json:
-        return
-
-    # 【新增解析 1】：获取故事线进展描述，绑定节点进度
     action_data = ai_json.get('storyline_action', {})
-    progress_desc = action_data.get('progress_desc', '')
-    if not progress_desc:
-        progress_desc = ai_json.get('story_position', '')  # 兼容兜底
+    action = action_data.get('action', 'MATCH')
 
-    # 4. 数据落盘：保存分析数据 (写入与节点绑定的进度)
+    bound_main_id = active_main_id
+    bound_sub_id = active_sub_id
+    new_content = action_data.get('new_node_content') or ai_json.get('summary', '事件推进')
+    new_name = action_data.get('new_node_name') or f"新事件(第{chapter_id}章)"
+
+    # === 状态机推演：新增 NEXT_PREPLANNED 兼容预设大纲 ===
+    if action == 'NEXT_PREPLANNED':
+        if active_sub: active_sub['is_completed'] = True
+
+        # 寻找作者预设的下一个未完成节点
+        next_sub = None
+        if active_main:
+            for c in active_main.get('children', []):
+                if not c.get('is_completed'):
+                    next_sub = c
+                    break
+
+        if next_sub:
+            bound_sub_id = next_sub['id']
+            # 如果预设节点之前没有内容，把AI分析的起因填充进去
+            if not next_sub.get('content'):
+                next_sub['content'] = new_content
+        else:
+            # 当前大节点所有预设小节点都完成了
+            if active_main: active_main['is_completed'] = True
+            next_main = None
+            for p in storylines:
+                if not p.get('is_completed'):
+                    next_main = p
+                    break
+
+            if next_main:
+                bound_main_id = next_main['id']
+                if not next_main.get('content'): next_main['content'] = new_content
+                if next_main.get('children'):
+                    bound_sub_id = next_main['children'][0]['id']
+                else:
+                    # 如果下一个预设大卷是空的，自动建一个起始事件
+                    bound_sub_id = 'c_' + str(int(time.time() * 1000))
+                    next_main['children'] = [{
+                        "id": bound_sub_id, "name": "起始事件", "content": new_content,
+                        "foreshadows": [], "is_completed": False
+                    }]
+            else:
+                # 极端兜底：作者的预设大纲用光了，那就自动降级为 NEW_MAIN 新建逻辑
+                action = 'NEW_MAIN'
+
+    # 原有的 NEW_MAIN 和 NEW_SUB 逻辑（在没有预设大纲时触发）
+    if action == 'NEW_MAIN':
+        if active_main: active_main['is_completed'] = True
+        if active_sub: active_sub['is_completed'] = True
+        bound_main_id = 'p_' + str(int(time.time() * 1000))
+        bound_sub_id = 'c_' + str(int(time.time() * 1000) + 1)
+        storylines.append({
+            "id": bound_main_id, "name": new_name, "content": new_content,
+            "foreshadows": [], "is_completed": False,
+            "children": [{
+                "id": bound_sub_id, "name": "起始事件", "content": new_content,
+                "foreshadows": [], "is_completed": False
+            }]
+        })
+        dao.update_storylines(book_name, storylines)
+
+    elif action == 'NEW_SUB':
+        if active_sub: active_sub['is_completed'] = True
+        bound_sub_id = 'c_' + str(int(time.time() * 1000))
+        if active_main:
+            active_main['children'].append({
+                "id": bound_sub_id, "name": new_name, "content": new_content,
+                "foreshadows": [], "is_completed": False
+            })
+            dao.update_storylines(book_name, storylines)
+
+    # 如果是 NEXT_PREPLANNED 但上面提前更新了节点属性，这里统一落盘
+    if action == 'NEXT_PREPLANNED':
+        dao.update_storylines(book_name, storylines)
+
+    # 伏笔自动绑定逻辑
+    fs_names_to_bind = []
+    for fs in ai_json.get('planted_foreshadows', []):
+        if isinstance(fs, dict) and fs.get('name'): fs_names_to_bind.append(fs['name'])
+    for fs_name in ai_json.get('revealed_foreshadows', []):
+        if fs_name: fs_names_to_bind.append(fs_name)
+
+    if fs_names_to_bind:
+        for p in storylines:
+            if p.get('id') == bound_main_id:
+                for c in p.get('children', []):
+                    if c.get('id') == bound_sub_id:
+                        c['foreshadows'] = c.get('foreshadows', [])
+                        for name in fs_names_to_bind:
+                            if name not in c['foreshadows']:
+                                c['foreshadows'].append(name)
+                        break
+                break
+        dao.update_storylines(book_name, storylines)
+
+    _save_analysis_and_entities(book_name, chapter_id, ai_json, characters, bound_main_id, bound_sub_id,
+                                action_data.get('progress_desc', ''))
+
+
+def _save_analysis_and_entities(book_name, chapter_id, ai_json, existing_characters, bound_main_id, bound_sub_id,
+                                progress_desc):
     dao.add_or_update_chapter_analysis(
         book_name, chapter_id,
         summary=ai_json.get('summary', ''),
         key_events=ai_json.get('key_events', []),
-        story_position=progress_desc,
+        story_position=progress_desc or ai_json.get('summary', ''),
         emotion_intensity=ai_json.get('emotion_intensity', 1),
-        involved_characters=ai_json.get('involved_characters', [])
+        involved_characters=ai_json.get('involved_characters', []),
+        bound_main_node_id=bound_main_id,
+        bound_sub_node_id=bound_sub_id
     )
 
-    # 5. 自动注册新出场角色
-    existing_char_names = [c['character_name'] for c in characters]
+    existing_char_names = [c['character_name'] for c in existing_characters]
     for char_name in ai_json.get('involved_characters', []):
         if char_name not in existing_char_names:
             dao.add_character(book_name, char_name, change_log=f"首次出现于第{chapter_id}章")
 
-    # 【新增逻辑：5.5 自动提取与更新伏笔】
-    planted_fs_list = ai_json.get('planted_foreshadows', [])
-    for fs in planted_fs_list:
-        fs_name = fs.get('name')
-        fs_content = fs.get('content')
-        if fs_name and fs_content:
-            dao.add_foreshadow(book_name, fs_name, chapter_id, fs_content, status="埋设中")
+    for fs in ai_json.get('planted_foreshadows', []):
+        if fs.get('name') and fs.get('content'):
+            dao.add_foreshadow(book_name, fs['name'], chapter_id, fs['content'], status="埋设中")
 
-    revealed_fs_list = ai_json.get('revealed_foreshadows', [])
-    for fs_name in revealed_fs_list:
+    for fs_name in ai_json.get('revealed_foreshadows', []):
         if fs_name:
-            # 自动将前文的旧伏笔更新为“已揭示”
             dao.update_foreshadow(book_name, fs_name, revealed_chapter=chapter_id, status="已揭示")
-
-    # 6. 故事线状态机逻辑（融合了严密的进度推进）
-    import time
-    is_frontier = True
-    analyses = dao.list_chapter_analyses(book_name)
-    for an in analyses:
-        if an.get('chapter_id', 0) > chapter_id and an.get('summary'):
-            is_frontier = False
-            break
-
-    if is_frontier:
-        action = action_data.get('action', 'MATCH')
-
-        active_main_idx = -1
-        for i, p in enumerate(storylines):
-            if not p.get('is_completed'):
-                active_main_idx = i
-                break
-
-        if action == 'NEW_MAIN':
-            # 开启新卷：把旧卷打上完成标签
-            if active_main_idx != -1:
-                storylines[active_main_idx]['is_completed'] = True
-                for c in storylines[active_main_idx].get('children', []):
-                    c['is_completed'] = True
-
-            new_p = {
-                "id": 'p_' + str(int(time.time() * 1000)),
-                "name": action_data.get('new_main_name', '初始剧情/新大卷'),
-                "content": "", "foreshadows": [], "is_completed": False,
-                "children": [{
-                    "id": 'c_' + str(int(time.time() * 1000) + 1),
-                    "name": action_data.get('new_sub_name', '起始事件'),
-                    "content": "", "foreshadows": [], "is_completed": False
-                }]
-            }
-            storylines.append(new_p)
-            dao.update_storylines(book_name, storylines)
-
-        elif action == 'NEW_SUB':
-            if active_main_idx != -1:
-                p = storylines[active_main_idx]
-                # 有新事件发生，说明上一个未完成的事件走完了，将其闭环
-                if p.get('children'):
-                    for c in reversed(p['children']):
-                        if not c.get('is_completed'):
-                            c['is_completed'] = True
-                            break
-
-                p['children'] = p.get('children', [])
-                p['children'].append({
-                    "id": 'c_' + str(int(time.time() * 1000)),
-                    "name": action_data.get('new_sub_name', '新支线事件'),
-                    "content": "", "foreshadows": [], "is_completed": False
-                })
-                dao.update_storylines(book_name, storylines)
-            else:
-                # 兜底：如果没有大节点，新建一个
-                new_p = {
-                    "id": 'p_' + str(int(time.time() * 1000)),
-                    "name": "初始剧情",
-                    "content": "", "foreshadows": [], "is_completed": False,
-                    "children": [{
-                        "id": 'c_' + str(int(time.time() * 1000) + 1),
-                        "name": action_data.get('new_sub_name', '新小节点'),
-                        "content": "", "foreshadows": [], "is_completed": False
-                    }]
-                }
-                storylines.append(new_p)
-                dao.update_storylines(book_name, storylines)
-
-        elif action == 'MATCH':
-            # 精确匹配节点：使用提取到的 current_node
-            matched_name = action_data.get('current_node', '')
-            if active_main_idx != -1 and matched_name:
-                p = storylines[active_main_idx]
-                state_changed = False
-
-                # 自动填补跳过的节点状态
-                for c in p.get('children', []):
-                    if c.get('name') == matched_name:
-                        break  # 找到了现在的位置，停止标记
-                    if not c.get('is_completed'):
-                        c['is_completed'] = True
-                        state_changed = True
-
-                if state_changed:
-                    dao.update_storylines(book_name, storylines)
 
 
 def task_vector_storage(book_name: str, chapter_id: int, content: str):
-    """线程B：提取片段、打标签、存入向量数据库"""
     prompt = PROMPT_VECTOR_TAGS.format(content=content)
     ai_config = load_ai_config()
 
@@ -219,45 +306,36 @@ def task_vector_storage(book_name: str, chapter_id: int, content: str):
 
 
 def cleanup_chapter_data(book_name: str, chapter_id: int):
-    """大清洗方法：清除当前章节的所有旧分析数据和向量碎片"""
-    # 1. 清理本地 JSON 中的本章分析数据
     dao.delete_chapter_analysis(book_name, chapter_id)
-    # 2. 清理向量数据库中的本章碎片
     vector_dao.delete_snippets_by_chapter(book_name, chapter_id)
 
 
 def run_finalize_pipeline(book_name: str, chapter_id: int, content: str, is_re_final: bool = False):
-    """触发并发流水线"""
-    if is_re_final:
-        # 如果是重新定稿，必须先在主线程把旧数据清理干净！
-        cleanup_chapter_data(book_name, chapter_id)
-
+    if is_re_final: cleanup_chapter_data(book_name, chapter_id)
     executor.submit(task_knowledge_analysis, book_name, chapter_id, content)
     executor.submit(task_vector_storage, book_name, chapter_id, content)
 
 
 def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, is_re_final: bool = False):
-    """【感知系统核心】带流式反馈的并发定稿流水线"""
     q = queue.Queue()
 
     def log_msg(msg):
-        """向前端小助手推送消息"""
         q.put(msg)
 
     def worker():
         try:
             if is_re_final:
                 log_msg("🧹 正在清理当前章节的历史残留数据...")
-                cleanup_chapter_data(book_name, chapter_id)  # 这里的 cleanup 必须是你刚才加过的那个
+                cleanup_chapter_data(book_name, chapter_id)
                 log_msg("✨ 历史数据清理完毕！")
 
             log_msg("🚀 正在启动后台双轨 AI 引擎...")
 
-            # 包装一下原有的两个任务，加上状态汇报
             def task_a():
-                log_msg("🧠 知识分析引擎：开始提取摘要、角色与伏笔...")
+                log_msg(
+                    f"🧠 知识分析引擎：{'正在进行第1章冷启动推演...' if chapter_id == 1 else '正在提取动态上下文与大纲防爆包装...'}")
                 task_knowledge_analysis(book_name, chapter_id, content)
-                log_msg("✅ 知识分析引擎：分析完毕，故事线已同步推演！")
+                log_msg("✅ 知识分析引擎：分析完毕，本章已与故事线完成节点强绑定！")
 
             def task_b():
                 log_msg("🔪 向量切片引擎：开始寻找高光片段并打标...")
@@ -267,21 +345,18 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
             future_a = executor.submit(task_a)
             future_b = executor.submit(task_b)
 
-            # 等待两个并发任务全部完成
             wait([future_a, future_b])
             q.put("DONE")
         except Exception as e:
             log_msg(f"❌ 引擎运行出现错误: {str(e)}")
             q.put("DONE")
 
-    # 启动后台主控线程
     threading.Thread(target=worker).start()
 
-    # 持续向前端吐出状态
     while True:
         msg = q.get()
         if msg == "DONE":
-            yield f"data: {json.dumps({'content': '🎉 章节定稿全部完成，你可以继续创作啦！'})}\n\n"
+            yield f"data: {json.dumps({'content': '🎉 章节定稿全部完成，故事线已推进，你可以继续创作啦！'})}\n\n"
             yield "data: [DONE]\n\n"
             break
         else:
