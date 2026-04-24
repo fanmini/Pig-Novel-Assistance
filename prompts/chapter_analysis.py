@@ -9,20 +9,32 @@ PROMPT_PLOT_ENGINE_COLD_START = """
 
 【书籍简介】: {book_desc}
 
+【核心法则】
+1. 提取阈值：什么是客观事实？必须是奠定人物命运基础、抛出核心世界观设定、或明确开启主线的事件。无意义的日常互动与背景废话坚决禁止提取。
+2. 绝对客观：杜绝任何主观推测与脑补，只记录已发生的动作和确定的背景。
+
 【输出格式要求】 (仅返回 JSON，禁止脑补后续，只能写客观发生的事实起因)
 {{
-  "summary": "本章的精确摘要（像回忆录一样的客观描述）",
-  "key_events": ["核心推进动作1", "核心推进动作2"],
-  "emotion_intensity": 5,
+  "summary": "本章的精确摘要（像回忆录一样的客观描述本章，包括一些重要细节）",
+  "key_events": [
+    "客观事实1(严格基于原文提取人物、时间、地点及核心设定的首次出现。坚决过滤冗余细节与主观推测)", 
+    "客观事实2"
+  ],
+  "emotion_intensity": "1~10(整数，基于全书节奏评估本章情绪波动幅度)",
   "involved_characters": ["出场角色1", "出场角色2"],
-  "planted_foreshadows": [ {{"name": "伏笔名称", "content": "伏笔描述"}} ],
-  "revealed_foreshadows": [],
+  "planted_foreshadows": [ 
+    {{"name": "伏笔名称", "content": "提取本章中作者刻意留白、存在明显反常的核心悬疑细节。坚决过滤无后续指向的常规描写。"}} 
+  ],
+  "revealed_foreshadows": [
+    "伏笔1(第一章通常为空数组[]。若有揭露已存在设定的前史，请填写名称)", 
+    "伏笔2"
+  ],
   "storyline_action": {{
     "action": "INIT",
     "main_node_content": "提取本章核心背景与起因，作为大节点内容",
     "sub_node_name": "为第一章事件起个小节点名称",
     "sub_node_content": "提取本章具体触发事件，作为小节点内容",
-    "progress_desc": "本章推进了什么具体进度"
+    "progress_desc": "基于故事线，本章推进了什么具体进度。"
   }}
 }}
 
@@ -41,24 +53,33 @@ PROMPT_PLOT_ENGINE = """
 - 上一章摘要: {prev_summary}
 【预设大纲】: {upcoming_storyline}
 
-【法则】
-节点内容绝对禁止脑补预测，必须是【承接上文触发条件】+【当下核心事实】。
+【核心法则】
+1. 增量提取原则：对比【之前已发生进度】，只提取本章“首次出现”的新设定或“发生质变”的事件。重复出现的技能、已知设定的再次应用，坚决不予提取。
+2. 事实阈值：必须是推进主线、导致核心人物命运转折或世界观拓展的重大客观事件。绝对禁止脑补预测。
+3. 伏笔闭环逻辑：【planted】只记录本章新挖的坑（异常悬疑细节）；【revealed】只记录本章填的坑（明确印证了前文某事）。绝不能让当前视角的分析去脑补未发生的未来！
 
 【输出格式要求】 (仅返回 JSON)
 {{
-  "summary": "...",
-  "key_events": ["...", "..."],
-  "emotion_intensity": 5,
+  "summary": "本章的精确摘要（像回忆录一样的客观描述本章，包括一些重要细节）",
+  "key_events": [
+    "重大事实1(基于增量原则，提取客观发生的核心转折或新设定，杜绝脑补与重复)", 
+    "重大事实2"
+  ],
+  "emotion_intensity": "1~10(整数，基于全书的节奏评估本章情绪波动幅度)",
   "involved_characters": ["参与本章的角色"],
-  "planted_foreshadows": [ {{"name": "伏笔", "content": "详情"}} ],
-  "revealed_foreshadows": [],
+  "planted_foreshadows": [ 
+    {{"name": "新增伏笔", "content": "提取本章中刻意留白、存在明确反常或核心悬疑感的细节。坚决过滤掉无剧情推动力的日常冗余描写。"}} 
+  ],
+  "revealed_foreshadows": [
+    "前文伏笔名称(记录本章中给出明确答案的事件，并指出它填了前文的什么坑。若无填坑则保持空数组[])"
+  ],
   "storyline_action": {{
-    "action": "MATCH 或 NEXT_PREPLANNED 或 NEW_SUB 或 NEW_MAIN",
-    "current_main_node_id": "{current_main_id}",
-    "current_sub_node_id": "{current_sub_id}",
+    "action": "MATCH 或 NEXT_PREPLANNED 或 NEW_SUB 或 NEW_MAIN"（MATCH：在宏观故事主干中存在并匹配，NEXT_PREPLANNED：代表进入宏观故事主干中规划好的下一个故事节点，NEW_SUB：宏观故事主干中没有找到的小故事节点，NEW_MAIN：宏观故事主干中没有找到的故事大节点）,
+    "current_main_node_id": "{current_main_id}"（如果没有匹配规划，请根据顺序新建）,
+    "current_sub_node_id": "{current_sub_id}"（如果没有匹配规划，请根据顺序新建）,
     "new_node_name": "若选NEW，填新节点名称（否则留空）",
     "new_node_content": "若选NEW，填客观起因（否则留空）",
-    "progress_desc": "本章推进的具体客观进度"
+    "progress_desc": "基于上一个节点，本章推进的具体客观进度"
   }}
 }}
 
@@ -77,36 +98,36 @@ PROMPT_ENTITY_ENGINE = """
 【本章出场已知角色与势力状态】 (由预扫描提供，用于对比判断质变)
 {entities_context}
 
-【法则与要求】
-1. 必须极具“故事感/人物小传感”：记录时要写明因为什么事件，发生了怎样的质变。
-2. 静默法则：如果是日常水字数，没有导致角色心理质变、人际关系质变或势力格局变动，对应数组必须返回空 []，宁缺毋滥！
-3. 新角色/新势力挖掘：如果你在【本章正文】中发现了不在上述【已知】列表里的新角色或新势力组织，请必须在 new_discoveries 数组中提取他们！
+【核心法则与要求】
+1. 质变阈值：必须极具“故事感/人物小传感”。记录时要写明“因为什么事件，发生了怎样的不可逆质变”。
+2. 绝对静默法则（防讨好机制）：如果本章是日常过渡或战斗水字数，且没有导致角色心理质变、人际关系实质性转折或势力格局变动，对应的数组【必须、坚决】返回空 []！宁缺毋滥，严禁为了凑字数而强行提取普通交互。
+3. 增量挖掘：只有在【本章正文】中发现了不在上述【已知】列表里的新角色/新势力时，才在 new_discoveries 提取。注意过滤掉一次性路人甲和纯炮灰。
 
 【输出格式要求】 (仅返回 JSON)
 {{
   "arc_changes": [
     {{
       "character_name": "张三",
-      "arc_summary": "一句话概括转变后的当前弧光状态（例：化悲愤为力量）",
-      "arc_detail": "带有故事感的长记录（例：目睹战友牺牲，从懦弱质变为决绝...）"
+      "arc_summary": "一句话概括转变后的当前弧光状态（例：从跳脱的性格转变为沉稳、沉默寡言）",
+      "arc_detail": "带有故事感、有头有尾的质变记录（例：在xx事件中，因xx意外目睹战友牺牲，从懦弱质变为决绝...）"
     }}
   ],
   "relationship_changes": [
     {{
       "subject": "张三",
       "target": "李四",
-      "relation_detail": "带有故事感的事件记录（例：李四挡下致命一击，张三视其为生死之交。）"
+      "relation_detail": "带有故事感的重大关系转折记录（例：因xx事件李四为其挡下致命一击，张三视其为生死之交。）"
     }}
   ],
   "faction_changes": [
     {{
       "faction_name": "黑龙商会",
-      "change_detail": "记录本章该势力发生的重大变故或对主角态度的转变（例：因分赃不均，商会内部爆发叛乱，实力大损。）"
+      "change_detail": "记录本章该势力发生的重大变故或态度转变（例：因分赃不均爆发叛乱，实力大损。）"
     }}
   ],
   "new_discoveries": {{
     "new_characters": [
-      {{"name": "王五", "profile": "初始人设底色与背景"}}
+      {{"name": "王五", "profile": "初始人设底色与背景（仅提取具有剧情推动潜力的非炮灰新角色）"}}
     ],
     "new_factions": [
       {{"name": "星火联盟", "description": "势力的初始宗旨、底色及本章登场表现"}}

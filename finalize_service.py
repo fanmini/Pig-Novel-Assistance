@@ -57,8 +57,7 @@ def build_entities_context(book_name: str, content: str) -> tuple:
             rels = c.get('relationships', [])
             rel_str_parts = []
             for r in rels:
-                latest_rel = r.get('history', [''])[-1] if isinstance(r.get('history'), list) and r.get(
-                    'history') else "暂无细节"
+                latest_rel = r.get('history', [''])[-1] if isinstance(r.get('history'), list) and r.get('history') else "暂无细节"
                 rel_str_parts.append(f"对【{r.get('target', '未知')}】: {latest_rel}")
             rel_str = " | ".join(rel_str_parts) if rel_str_parts else "暂无人际互动"
 
@@ -77,17 +76,53 @@ def build_entities_context(book_name: str, content: str) -> tuple:
     return entities_context_text, involved_chars, involved_factions
 
 
+class ContextManager:
+    """统一资料配置中心：负责搜集所有喂给 AI 的书籍资料"""
+    @staticmethod
+    def build_full_context(book_name: str, chapter_id: int, content: str) -> dict:
+        # 1. 基础信息拉取
+        book = dao.get_book(book_name) or {}
+        prev_an = dao.get_chapter_analysis(book_name, chapter_id - 1)
+        storylines = dao.list_storylines(book_name)
+        analyses = dao.list_chapter_analyses(book_name)
+
+        # 2. 提取条目资料（例如从前端的知识库“条目”中提取“世界观”）
+        meta_list = book.get('meta_list', [])
+        world_background = "暂无"
+        for meta in meta_list:
+            if meta.get('key') == '世界观':  # 只要在前端建了叫“世界观”的条目，就会被塞进这里
+                world_background = meta.get('value', '暂无')
+
+        # 3. 实体极速预扫描
+        entities_text, involved_chars, involved_factions = build_entities_context(book_name, content)
+
+        # 返回统一的资料包
+        return {
+            "book_desc": book.get('description', '暂无简介'),
+            "world_background": world_background,
+            "prev_summary": prev_an.get('summary', '暂无') if prev_an else "暂无",
+            "storylines": storylines,
+            "analyses": analyses,
+            "entities_context": entities_text,
+            "involved_chars": involved_chars,
+            "involved_factions": involved_factions
+        }
+
+
 # =====================================================================
 # 三轨并发引擎任务 (独立且纯粹)
 # =====================================================================
-def task_plot_engine(book_name: str, chapter_id: int, content: str, ai_config: dict):
+def task_plot_engine(chapter_id: int, content: str, context: dict, ai_config: dict):
     """第一轨：剧情推演引擎"""
-    book = dao.get_book(book_name)
-    storylines = dao.list_storylines(book_name)
-    analyses = dao.list_chapter_analyses(book_name)
+    storylines = context['storylines']
+    analyses = context['analyses']
 
     if chapter_id == 1:
-        prompt = PROMPT_PLOT_ENGINE_COLD_START.format(book_desc=book.get('description', '暂无简介'), content=content)
+        prompt = PROMPT_PLOT_ENGINE_COLD_START.format(
+            book_desc=context['book_desc'],
+            world_background=context['world_background'],
+            content=content
+        )
     else:
         # === 寻找当前活跃节点 ===
         active_main, active_sub = None, None
@@ -119,41 +154,46 @@ def task_plot_engine(book_name: str, chapter_id: int, content: str, ai_config: d
 
         upcoming_lines = []
         if active_main:
-            for c in active_main.get('children', [])[active_sub_idx + 1:]: upcoming_lines.append(
-                f"预设小节点:【{c.get('name')}】")
+            for c in active_main.get('children', [])[active_sub_idx + 1:]:
+                upcoming_lines.append(f"预设小节点:【{c.get('name')}】")
             for p in storylines[active_main_idx + 1: active_main_idx + 3]:
                 upcoming_lines.append(f"预设大卷:【{p.get('name')}】")
-                for c in p.get('children', []): upcoming_lines.append(f"  预设小节点:【{c.get('name')}】")
+                for c in p.get('children', []):
+                    upcoming_lines.append(f"  预设小节点:【{c.get('name')}】")
 
         progress_lines = [f"第{an['chapter_id']}章: {an.get('story_position', '')}" for an in
                           sorted(analyses, key=lambda x: x.get('chapter_id', 0)) if
                           an.get('bound_sub_node_id') == active_sub_id]
 
-        prev_an = dao.get_chapter_analysis(book_name, chapter_id - 1)
-
         prompt = PROMPT_PLOT_ENGINE.format(
+            world_background=context['world_background'],
             macro_storyline="\n".join(macro_lines),
             current_main_name=active_main.get('name') if active_main else "未知",
             current_sub_name=active_sub.get('name') if active_sub else "未知",
             current_node_progress="\n".join(progress_lines) if progress_lines else "暂无",
             upcoming_storyline="\n".join(upcoming_lines) if upcoming_lines else "暂无",
-            prev_summary=prev_an.get('summary', '暂无') if prev_an else "暂无",
+            prev_summary=context['prev_summary'],
             current_main_id=active_main_id,
             current_sub_id=active_sub_id,
             content=content
         )
 
     response = ai_handler.chat([{"role": "user", "content": prompt}],
-                               model=ai_config.get('model', 'openai/gpt-4o-mini'), api_key=ai_config.get('api_key', ''),
+                               model=ai_config.get('model', 'openai/gpt-4o-mini'),
+                               api_key=ai_config.get('api_key', ''),
                                temperature=0.2)
     return clean_json_string(response.choices[0].message.content)
 
 
-def task_entity_engine(book_name: str, content: str, entities_context_text: str, ai_config: dict):
+def task_entity_engine(content: str, context: dict, ai_config: dict):
     """第二轨：生灵与势力引擎 (专注实体状态演进与挖掘)"""
-    prompt = PROMPT_ENTITY_ENGINE.format(entities_context=entities_context_text, content=content)
+    prompt = PROMPT_ENTITY_ENGINE.format(
+        entities_context=context['entities_context'],
+        content=content
+    )
     response = ai_handler.chat([{"role": "user", "content": prompt}],
-                               model=ai_config.get('model', 'openai/gpt-4o-mini'), api_key=ai_config.get('api_key', ''),
+                               model=ai_config.get('model', 'openai/gpt-4o-mini'),
+                               api_key=ai_config.get('api_key', ''),
                                temperature=0.3)
     return clean_json_string(response.choices[0].message.content)
 
@@ -166,7 +206,8 @@ def task_vector_engine(book_name: str, chapter_id: int, content: str, plot_resul
 
     prompt = PROMPT_VECTOR_TAGS.format(current_main_name=main_name, current_sub_name=sub_name, content=content)
     response = ai_handler.chat([{"role": "user", "content": prompt}],
-                               model=ai_config.get('model', 'openai/gpt-4o-mini'), api_key=ai_config.get('api_key', ''),
+                               model=ai_config.get('model', 'openai/gpt-4o-mini'),
+                               api_key=ai_config.get('api_key', ''),
                                temperature=0.3)
     ai_json = clean_json_string(response.choices[0].message.content)
 
@@ -178,8 +219,7 @@ def task_vector_engine(book_name: str, chapter_id: int, content: str, plot_resul
 # =====================================================================
 # 流水线总控与数据落盘 (统一协调)
 # =====================================================================
-def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, entity_json: dict,
-                              involved_chars: list):
+def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, entity_json: dict, involved_chars: list):
     """处理并合并三个引擎的数据，执行状态机推进和日志追加"""
     storylines = dao.list_storylines(book_name)
     action_data = plot_json.get('storyline_action', {})
@@ -213,8 +253,7 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
 
         if action == 'NEXT_PREPLANNED':
             if active_sub: active_sub['is_completed'] = True
-            next_sub = next((c for c in active_main.get('children', []) if not c.get('is_completed')),
-                            None) if active_main else None
+            next_sub = next((c for c in active_main.get('children', []) if not c.get('is_completed')), None) if active_main else None
             if next_sub:
                 bound_sub_id = next_sub['id']
                 if not next_sub.get('content'): next_sub['content'] = new_content
@@ -229,8 +268,7 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
                     else:
                         bound_sub_id = 'c_' + str(int(time.time() * 1000))
                         next_main['children'] = [
-                            {"id": bound_sub_id, "name": "起始事件", "content": new_content, "foreshadows": [],
-                             "is_completed": False}]
+                            {"id": bound_sub_id, "name": "起始事件", "content": new_content, "foreshadows": [], "is_completed": False}]
                 else:
                     action = 'NEW_MAIN'  # 兜底
 
@@ -240,20 +278,15 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
             bound_main_id, bound_sub_id = 'p_' + str(int(time.time() * 1000)), 'c_' + str(int(time.time() * 1000) + 1)
             storylines.append({"id": bound_main_id, "name": new_name, "content": new_content, "foreshadows": [],
                                "is_completed": False, "children": [
-                    {"id": bound_sub_id, "name": "起始事件", "content": new_content, "foreshadows": [],
-                     "is_completed": False}]})
+                    {"id": bound_sub_id, "name": "起始事件", "content": new_content, "foreshadows": [], "is_completed": False}]})
         elif action == 'NEW_SUB':
             if active_sub: active_sub['is_completed'] = True
             bound_sub_id = 'c_' + str(int(time.time() * 1000))
             if active_main: active_main['children'].append(
-                {"id": bound_sub_id, "name": new_name, "content": new_content, "foreshadows": [],
-                 "is_completed": False})
+                {"id": bound_sub_id, "name": new_name, "content": new_content, "foreshadows": [], "is_completed": False})
 
     # 伏笔自动绑定
-    fs_to_bind = [fs['name'] for fs in plot_json.get('planted_foreshadows', []) if fs.get('name')] + [fs for fs in
-                                                                                                      plot_json.get(
-                                                                                                          'revealed_foreshadows',
-                                                                                                          []) if fs]
+    fs_to_bind = [fs['name'] for fs in plot_json.get('planted_foreshadows', []) if fs.get('name')] + [fs for fs in plot_json.get('revealed_foreshadows', []) if fs]
     if fs_to_bind:
         for p in storylines:
             if p.get('id') == bound_main_id:
@@ -273,8 +306,7 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
         bound_main_node_id=bound_main_id, bound_sub_node_id=bound_sub_id
     )
     for fs in plot_json.get('planted_foreshadows', []):
-        if fs.get('name') and fs.get('content'): dao.add_foreshadow(book_name, fs['name'], chapter_id, fs['content'],
-                                                                    status="埋设中")
+        if fs.get('name') and fs.get('content'): dao.add_foreshadow(book_name, fs['name'], chapter_id, fs['content'], status="埋设中")
     for fs_name in plot_json.get('revealed_foreshadows', []):
         if fs_name: dao.update_foreshadow(book_name, fs_name, revealed_chapter=chapter_id, status="已揭示")
 
@@ -341,7 +373,7 @@ def cleanup_chapter_data(book_name: str, chapter_id: int):
 
 
 def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, is_re_final: bool = False):
-    """【终极架构】带预扫描和三轨并发的定稿流水线"""
+    """【终极架构】带统一资料中心和三轨并发的定稿流水线"""
     q = queue.Queue()
     ai_config = load_ai_config()
 
@@ -354,14 +386,15 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
                 log_msg("🧹 正在清理当前章节的历史残留数据...")
                 cleanup_chapter_data(book_name, chapter_id)
 
-            log_msg("🔍 [主控] 正在极速扫描本章登场实体，打包专属记忆库...")
-            entities_context_text, involved_chars, _ = build_entities_context(book_name, content)
+            log_msg("🔍 [主控] 正在拉取全书统一知识上下文...")
+            # 统一入口：在这里拿到所有的喂饭资料！
+            context_payload = ContextManager.build_full_context(book_name, chapter_id, content)
 
             log_msg("🚀 [主控] 启动【三轨并发 AI 引擎】...")
 
             # --- 并发启动三驾马车 ---
-            plot_future = executor.submit(task_plot_engine, book_name, chapter_id, content, ai_config)
-            entity_future = executor.submit(task_entity_engine, book_name, content, entities_context_text, ai_config)
+            plot_future = executor.submit(task_plot_engine, chapter_id, content, context_payload, ai_config)
+            entity_future = executor.submit(task_entity_engine, content, context_payload, ai_config)
 
             # 等待剧情引擎完成，拿到结构数据再跑向量打标会更准
             plot_result = plot_future.result()
@@ -376,7 +409,7 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
             log_msg("✅ [轨三] 高光片段向量存储与打标完毕！")
 
             log_msg("💾 [主控] 正在统筹合并所有维度数据，执行安全落盘...")
-            _process_and_save_results(book_name, chapter_id, plot_result, entity_result, involved_chars)
+            _process_and_save_results(book_name, chapter_id, plot_result, entity_result, context_payload['involved_chars'])
 
             q.put("DONE")
         except Exception as e:

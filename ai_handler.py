@@ -19,8 +19,8 @@ class AIHandler:
 
     # 预定义可用模型列表（前端展示用）
     AVAILABLE_MODELS = [
-        {"id": "deepseek/deepseek-chat", "name": "DeepSeek-快速", "provider": "DeepSeek"},
-        {"id": "deepseek/deepseek-reasoner", "name": "DeepSeek-思考", "provider": "DeepSeek"},
+        {"id": "deepseek/deepseek-v4-flash", "name": "DeepSeek-flash", "provider": "DeepSeek"},
+        {"id": "deepseek/deepseek-v4-pro", "name": "DeepSeek-pro", "provider": "DeepSeek"},
         {"id": "dashscope/qwen3-max-preview", "name": "通义千问 Max", "provider": "Alibaba"},
         {"id": "dashscope/qwen-plus-latest", "name": "通义千问 Plus", "provider": "Alibaba"},
         {"id": "gemini/gemini-2.0-flash", "name": "Gemini 2.0 Flash", "provider": "Google"},

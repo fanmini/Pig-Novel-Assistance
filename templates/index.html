@@ -134,6 +134,8 @@
         .chat-msg.user { align-self: flex-end; background: #3b82f6; color: white; border-bottom-right-radius: 4px; }
         .chat-msg.assistant { align-self: flex-start; background: white; border: 1px solid #e2e8f0; color: #1e293b; border-bottom-left-radius: 4px; }
 
+
+
         /* ========= 故事线 Timeline 增强样式 ========= */
         .timeline { padding: 12px 6px; padding-bottom: 30px; }
         .tl-item { position: relative; padding: 0 0 16px 28px; cursor: pointer; }
@@ -203,6 +205,22 @@
         .toast.success { background: #10b981; }
         @keyframes fadeInOut {0% { opacity: 0; transform: translateY(-10px); }10% { opacity: 1; transform: translateY(0); }90% { opacity: 1; transform: translateY(0); }100% { opacity: 0; transform: translateY(-10px); }}
     </style>
+    <style>
+        /* 调试弹窗专用样式 */
+        .debug-modal { width: 90vw; height: 85vh; display: flex; flex-direction: column; }
+        .debug-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .debug-body { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; overflow: hidden; }
+        .debug-section { display: flex; flex-direction: column; overflow: hidden; }
+        .debug-section h4 { margin-bottom: 10px; color: #64748b; }
+        .code-block { background: #1e293b; color: #e2e8f0; padding: 15px; border-radius: 8px; font-family: 'Consolas', monospace; font-size: 12px; overflow: auto; flex: 1; white-space: pre-wrap; }
+        .code-block.json { color: #34d399; }
+
+        .finalize-step-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; margin-bottom: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: 0.2s; }
+        .finalize-step-card:hover { border-color: #3b82f6; background: #f0f7ff; }
+        .finalize-step-card.processing { border-left: 4px solid #3b82f6; }
+        .finalize-step-card.success { border-left: 4px solid #10b981; }
+        .debug-hint { font-size: 11px; color: #3b82f6; margin-top: 4px; font-weight: 600; }
+</style>
 </head>
 <body>
 <div id="app"></div>
@@ -378,6 +396,10 @@
       const deletingItemId = ref(null);
 
       // AI 相关
+      const finalizeSteps = ref([]); // 存储定稿的实时步骤
+      const showDebugModal = ref(false); // 调试大框开关
+      const selectedDebug = ref(null); // 当前选中的调试内容
+
       const aiModels = ref([]);
       const aiConfig = reactive({ model: 'openai/gpt-4o-mini', api_key: '', temperature: 0.7, max_tokens: 1024, top_p: 1.0 });
       const isTestingConnection = ref(false);
@@ -507,7 +529,7 @@
       function openRoleModal(chapterId) { roleModal.chapterId = chapterId; roleModal.selectedRoles = [...(getAnalysis(chapterId).involved_characters || [])]; roleModal.visible = true; loadCharacters(); }
       async function saveRoleSelection() { const { chapterId, selectedRoles } = roleModal; try { await apiFetch(`${API_BASE}/books/${currentBook.value}/chapter_analyses/${chapterId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ involved_characters: selectedRoles }) }); let target = analysisCache[currentBook.value]?.find(a => a.chapter_id === chapterId); if (!target) { target = { chapter_id: chapterId }; analysisCache[currentBook.value].push(target); } target.involved_characters = selectedRoles; roleModal.visible = false; showToast('已更新', 'success'); } catch (e) { showToast('保存失败', 'error'); } }
       async function saveAnalysisField() { const { chapterId, field, value } = modal; let newValue = value; if (field === 'key_events' || field === 'involved_characters') newValue = value.split(field==='key_events'?'\n':'、').map(s=>s.trim()).filter(s=>s); else if (field === 'emotion_intensity') newValue = parseInt(value)||1; try { await apiFetch(`${API_BASE}/books/${currentBook.value}/chapter_analyses/${chapterId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [field]: newValue }) }); let target = analysisCache[currentBook.value]?.find(a => a.chapter_id === chapterId); if (!target) { target = { chapter_id: chapterId }; analysisCache[currentBook.value].push(target); } target[field] = newValue; modal.visible = false; showToast('已更新', 'success'); } catch (e) { showToast('保存失败', 'error'); } }
-      function fieldLabel(f) { return { summary:'摘要', key_events:'事件', story_position:'故事进度', emotion_intensity:'情感强度', involved_characters:'角色' }[f] || f; }
+      function fieldLabel(f) { return { summary:'摘要', key_events:'事实', story_position:'故事进度', emotion_intensity:'情感强度', involved_characters:'角色' }[f] || f; }
       function addKeyEvent(chapterId) { const events = getAnalysis(chapterId).key_events || []; events.push(''); openEditModal(chapterId, 'key_events', events); }
 
       function editMeta(meta) { editingMeta.value = meta ? { ...meta } : { key: '', value: '' }; editorTitle.value = editingMeta.value.key; editorContent.value = editingMeta.value.value; editMode.value = 'meta'; }
@@ -531,10 +553,52 @@
       async function loadCharacters() { if (!currentBook.value) return; try { charactersList.value = await apiFetch(`${API_BASE}/books/${currentBook.value}/characters`); } catch (e) {} }
       const sortedCharacters = computed(() => [...charactersList.value].sort((a,b) => (b.importance_level||0) - (a.importance_level||0)));
       function newCharacter() { editingCharacter.value = null; charForm.name = ''; charForm.importance_level = 1; charForm.change_log = ''; charForm.relationships = ''; charForm.profile = ''; editMode.value = 'character'; }
-      function editCharacter(char) { editingCharacter.value = { ...char }; charForm.name = char.character_name; charForm.importance_level = char.importance_level || 1; charForm.change_log = char.change_log || ''; charForm.relationships = Array.isArray(char.relationships) ? char.relationships.join('\n') : (char.relationships || ''); charForm.profile = char.profile || ''; editMode.value = 'character'; }
+      function editCharacter(char) {
+        editingCharacter.value = { ...char };
+        charForm.name = char.character_name;
+        charForm.importance_level = char.importance_level || 1;
+        charForm.change_log = char.change_log || '';
+
+        // 解析关系网对象为多行文本
+        if (Array.isArray(char.relationships)) {
+            charForm.relationships = char.relationships.map(r => {
+                if (typeof r === 'string') return r; // 兼容旧版本的纯字符串格式
+                if (r && typeof r === 'object') {
+                    let historyStr = (r.history && r.history.length) ? r.history[r.history.length - 1] : '';
+                    return `${r.target}: ${historyStr}`;
+                }
+                return '';
+            }).filter(s => s).join('\n');
+        } else {
+            charForm.relationships = char.relationships || '';
+        }
+
+        charForm.profile = char.profile || '';
+        editMode.value = 'character';
+      }
+
       async function saveCharacter() {
           if (!charForm.name.trim()) { showToast('角色名不能为空', 'error'); return; }
-          const payload = { importance_level: charForm.importance_level, change_log: charForm.change_log, relationships: charForm.relationships.split('\n').map(s => s.trim()).filter(s => s), profile: charForm.profile };
+
+          // 组装回后端 AI 需要的对象数组格式
+          const relArray = charForm.relationships.split('\n').map(s => s.trim()).filter(s => s).map(s => {
+              // 支持中文冒号或英文冒号分割
+              const parts = s.split(/[:：]/);
+              if (parts.length >= 2) {
+                  const target = parts[0].trim();
+                  const desc = parts.slice(1).join(':').trim();
+                  return { target: target, history: [desc] };
+              }
+              return { target: s, history: [] }; // 如果用户没输入冒号，直接作为 target
+          });
+
+          const payload = {
+              importance_level: charForm.importance_level,
+              change_log: charForm.change_log,
+              relationships: relArray, // 使用重新组装的对象数组
+              profile: charForm.profile
+          };
+
           const isNew = !editingCharacter.value;
 
           if (isNew) {
@@ -621,67 +685,72 @@
       }
       async function sendAiMessage() { const msg = aiInput.value.trim(); if (aiMode.value === 'continue' && !msg) { showToast('续写模式下不能为空', 'error'); return; } aiMessages.value.push({ role: 'user', content: msg || '（空）' }); aiInput.value = ''; setTimeout(() => { aiMessages.value.push({ role: 'assistant', content: `🤖 收到：关于“${msg}”，建议记录到伏笔或角色弧光中～` }); }, 500); nextTick(adjustAiTextareaHeight); }
       async function triggerFinalize(isReFinal) {
-        if (!currentBook.value || !currentChapterId.value) return;
+          if (!currentBook.value || !currentChapterId.value) return;
 
-        // 确保本地内容先存一版
-        await saveChapterSilently();
+          // 1. 初始化状态
+          finalizeSteps.value = [];
+          showAiSidebar.value = true;
+          aiMode.value = 'generate';
 
-        const ch = chapters.value.find(c => c.id === currentChapterId.value);
-        const payload = { title: editorTitle.value, content: editorContent.value, is_re_final: isReFinal };
+          // 2. 确保本地内容先存一版
+          await saveChapterSilently();
 
-        // 强制打开AI侧边栏并初始化第一条消息
-        showAiSidebar.value = true;
-        aiMode.value = 'generate';
-        aiMessages.value.push({ role: 'assistant', content: isReFinal ? '🔄 收到重新定稿指令，马上为您调度后台算力！' : '🚀 收到定稿指令，正在为您调度后台算力...' });
+          const ch = chapters.value.find(c => c.id === currentChapterId.value);
+          const payload = {
+            title: editorTitle.value,
+            content: editorContent.value,
+            is_re_final: isReFinal
+          };
 
-        const scrollToBottom = () => {
-            nextTick(() => { const el = document.querySelector('.ai-messages'); if(el) el.scrollTop = el.scrollHeight; });
-        };
-        scrollToBottom();
+          try {
+            // 3. 发起流式请求
+            const res = await fetch(`${API_BASE}/books/${currentBook.value}/chapters/${currentChapterId.value}/finalize`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
 
-        try {
-          const res = await fetch(`${API_BASE}/books/${currentBook.value}/chapters/${currentChapterId.value}/finalize`, {
-              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-          });
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
 
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
+            while(true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, {stream: true});
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
 
-          while(true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              buffer += decoder.decode(value, {stream: true});
-              const lines = buffer.split('\n');
-              buffer = lines.pop() || '';
-
-              for (const line of lines) {
-                  if (line.startsWith('data: ')) {
-                      const data = line.slice(6);
-                      if (data === '[DONE]') {
-                          if(ch) ch.status = true;
-
-                          // 【核心修复】：定稿结束后，必须重新拉取故事线和伏笔，刷新界面进度！
-                          await loadStorylines();
-                          await loadForeshadows();
-                          await loadAnalysisData();
-
-                          return;
-                      }
-                      try {
-                          const parsed = JSON.parse(data);
-                          if(parsed.content) {
-                              aiMessages.value.push({ role: 'assistant', content: parsed.content });
-                              scrollToBottom();
-                          }
-                      } catch(e) {}
-                  }
-              }
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6);
+                        if (data === '[DONE]') {
+                            if(ch) ch.status = true;
+                            // 刷新数据
+                            await Promise.all([loadStorylines(), loadForeshadows(), loadAnalysisData()]);
+                            return;
+                        }
+                        try {
+                            const parsed = JSON.parse(data);
+                            // 核心修改：如果是步骤消息，更新步骤列表
+                            if (parsed.type === 'step') {
+                                const idx = finalizeSteps.value.findIndex(s => s.engine === parsed.engine);
+                                if (idx > -1) {
+                                    finalizeSteps.value[idx] = parsed;
+                                } else {
+                                    finalizeSteps.value.push(parsed);
+                                }
+                            } else if(parsed.content) {
+                                // 兼容普通的提示文本
+                                aiMessages.value.push({ role: 'assistant', content: parsed.content });
+                            }
+                        } catch(e) {}
+                    }
+                }
+            }
+          } catch (e) {
+            showToast('定稿流程中断', 'error');
           }
-        } catch (e) {
-          aiMessages.value.push({ role: 'assistant', content: '❌ 定稿流程发生网络中断，请检查控制台。' });
-          scrollToBottom();
-        }
       }
 
 
@@ -706,6 +775,9 @@
       loadBooks();
 
       return {
+        finalizeSteps,
+        showDebugModal,
+        selectedDebug,
         roleActiveTab, factionsList, showFactionModal, editingFaction, factionForm,
         loadFactions, openFactionModal, saveFaction, deleteFaction,
         viewingFsDetail, viewForeshadowDetail, isActiveStorylineNode, getNodeNamesForChapter,
@@ -822,7 +894,7 @@
                       </div>
                   </div>
                   <div class="analysis-field-row"><span class="field-label-text">情感强度</span><div class="field-content"><span>[[ getAnalysis(ch.id).emotion_intensity || 1 ]] / 10</span><span class="edit-pencil" @click.stop="openEditModal(ch.id, 'emotion_intensity', getAnalysis(ch.id).emotion_intensity)">✎</span></div></div>
-                  <div class="analysis-field-row"><span class="field-label-text">事件</span><div class="field-content" style="display:block"><div v-if="getAnalysis(ch.id).key_events?.length"><div v-for="(ev,idx) in getAnalysis(ch.id).key_events" class="event-item"><span class="event-index">[[ idx+1 ]].</span><span class="event-text">[[ ev ]]</span><span class="edit-pencil" @click.stop="openEditModal(ch.id, 'key_events', getAnalysis(ch.id).key_events)">✎</span></div></div><div v-else style="color:#94a3b8;">暂无事件</div><button class="add-event-btn" @click.stop="addKeyEvent(ch.id)">+ 添加事件</button></div></div>
+                  <div class="analysis-field-row"><span class="field-label-text">事实</span><div class="field-content" style="display:block"><div v-if="getAnalysis(ch.id).key_events?.length"><div v-for="(ev,idx) in getAnalysis(ch.id).key_events" class="event-item"><span class="event-index">[[ idx+1 ]].</span><span class="event-text">[[ ev ]]</span><span class="edit-pencil" @click.stop="openEditModal(ch.id, 'key_events', getAnalysis(ch.id).key_events)">✎</span></div></div><div v-else style="color:#94a3b8;">暂无事实</div><button class="add-event-btn" @click.stop="addKeyEvent(ch.id)">+ 添加事实</button></div></div>
                 </div>
               </div>
             </div>
@@ -1063,9 +1135,20 @@
 
           <div class="ai-sidebar" v-show="showAiSidebar">
             <div class="ai-header"><span>🤖 文形小助手</span></div>
-            <div class="ai-messages">
-              <div v-for="(msg, idx) in aiMessages" :key="idx" class="message" :class="msg.role">
-                <div class="message-bubble">[[ msg.content ]]</div>
+            <div class="ai-messages" v-if="finalizeSteps.length">
+              <div v-for="step in finalizeSteps" :key="step.engine"
+                   class="finalize-step-card"
+                   :class="step.status"
+                   @click="step.debug ? (selectedDebug = step, showDebugModal = true) : null">
+                <div class="step-icon">
+                    <span v-if="step.status === 'processing'">⏳</span>
+                    <span v-else-if="step.status === 'success'">✅</span>
+                    <span v-else>❌</span>
+                </div>
+                <div class="step-info">
+                    <div class="step-msg">[[ step.msg ]]</div>
+                    <div v-if="step.debug" class="debug-hint">点击进入调试面板 🔍</div>
+                </div>
               </div>
             </div>
             <div class="ai-input-area">
@@ -1147,10 +1230,31 @@
             </div>
         </div>
 
+        <div v-if="showDebugModal" class="modal-overlay" @click.self="showDebugModal = false">
+          <div class="modal debug-modal">
+            <div class="debug-header">
+                <h3>🛠️ 定稿引擎调试控制台 - [[ selectedDebug?.engine ]]</h3>
+                <button class="modal-btn secondary" @click="showDebugModal = false">关闭</button>
+            </div>
+            <div class="debug-body">
+                <div class="debug-section">
+                    <h4>📡 发送给 AI 的上下文 (Prompt)</h4>
+                    <pre class="code-block">[[ selectedDebug?.debug.prompt ]]</pre>
+                </div>
+                <div class="debug-section">
+                    <h4>🤖 AI 返回的原始数据 (Raw Response)</h4>
+                    <pre class="code-block json">[[ selectedDebug?.debug.response ]]</pre>
+                </div>
+            </div>
+          </div>
+        </div>
+
+
       </div>
     `
   });
   app.mount('#app');
 </script>
+
 </body>
 </html>
