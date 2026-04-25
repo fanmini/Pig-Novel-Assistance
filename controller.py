@@ -5,9 +5,11 @@ from flask import Blueprint, request, jsonify, Response
 from finalize_service import  run_finalize_pipeline_stream
 from ai_handler import ai_handler, load_ai_config, save_ai_config
 from base_dao import NovelModel
+from vector_dao import vector_dao
 
 api_bp = Blueprint('api', __name__)
 dao = NovelModel()
+
 
 # ---------- 书籍 ----------
 @api_bp.route('/books', methods=['GET'])
@@ -46,6 +48,7 @@ def update_book(name):
 def delete_book(name):
     success = dao.delete_book(name)
     if success:
+        vector_dao.delete_collection(name)
         return jsonify({'message': '删除成功'})
     return jsonify({'error': '删除失败'}), 400
 

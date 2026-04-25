@@ -182,7 +182,8 @@ def task_plot_engine(chapter_id: int, content: str, context: dict, ai_config: di
                                model=ai_config.get('model', 'openai/gpt-4o-mini'),
                                api_key=ai_config.get('api_key', ''),
                                temperature=0.2)
-    return clean_json_string(response.choices[0].message.content)
+    raw_content = response.choices[0].message.content
+    return clean_json_string(raw_content), {"prompt": prompt, "response": raw_content}
 
 
 def task_entity_engine(content: str, context: dict, ai_config: dict):
@@ -195,8 +196,8 @@ def task_entity_engine(content: str, context: dict, ai_config: dict):
                                model=ai_config.get('model', 'openai/gpt-4o-mini'),
                                api_key=ai_config.get('api_key', ''),
                                temperature=0.3)
-    return clean_json_string(response.choices[0].message.content)
-
+    raw_content = response.choices[0].message.content
+    return clean_json_string(raw_content), {"prompt": prompt, "response": raw_content}
 
 def task_vector_engine(book_name: str, chapter_id: int, content: str, plot_result: dict, ai_config: dict):
     """第三轨：高光与向量引擎"""
@@ -209,12 +210,17 @@ def task_vector_engine(book_name: str, chapter_id: int, content: str, plot_resul
                                model=ai_config.get('model', 'openai/gpt-4o-mini'),
                                api_key=ai_config.get('api_key', ''),
                                temperature=0.3)
-    ai_json = clean_json_string(response.choices[0].message.content)
+
+    # 【修改】：记录原始返回
+    raw_content = response.choices[0].message.content
+    ai_json = clean_json_string(raw_content)
 
     for item in ai_json.get('snippets', []):
         if item.get('content') and item.get('tags'):
             vector_dao.save_snippet_tags(book_name, chapter_id, item['content'], item['tags'])
 
+    # 【修改】：将调试数据返回
+    return {"prompt": prompt, "response": raw_content}
 
 # =====================================================================
 # 流水线总控与数据落盘 (统一协调)
@@ -377,43 +383,56 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
     q = queue.Queue()
     ai_config = load_ai_config()
 
-    def log_msg(msg):
-        q.put(msg)
+    # 【核心修复】：增加 debug 参数接收，传给前端用于渲染弹窗
+    def log_step(engine, status, msg, debug=None):
+        step_data = {
+            "type": "step",
+            "engine": engine,
+            "status": status,
+            "msg": msg
+        }
+        if debug:
+            step_data["debug"] = debug
+        q.put(step_data)
 
     def worker():
         try:
-            if is_re_final:
-                log_msg("🧹 正在清理当前章节的历史残留数据...")
-                cleanup_chapter_data(book_name, chapter_id)
+            log_step("系统清理", "processing", "🧹 正在清理当前章节的历史残留数据...")
+            cleanup_chapter_data(book_name, chapter_id)
+            log_step("系统清理", "success", "🧹 残留数据清理完成。")
 
-            log_msg("🔍 [主控] 正在拉取全书统一知识上下文...")
-            # 统一入口：在这里拿到所有的喂饭资料！
+            log_step("主控中心", "processing", "🔍 正在拉取全书统一知识上下文...")
             context_payload = ContextManager.build_full_context(book_name, chapter_id, content)
 
-            log_msg("🚀 [主控] 启动【三轨并发 AI 引擎】...")
-
-            # --- 并发启动三驾马车 ---
+            log_step("第一轨 (剧情)", "processing", "⏳ 剧情世界观引擎正在推演...")
             plot_future = executor.submit(task_plot_engine, chapter_id, content, context_payload, ai_config)
+
+            log_step("第二轨 (生灵)", "processing", "⏳ 生灵势力引擎正在挖掘状态变动...")
             entity_future = executor.submit(task_entity_engine, content, context_payload, ai_config)
 
-            # 等待剧情引擎完成，拿到结构数据再跑向量打标会更准
-            plot_result = plot_future.result()
-            log_msg("✅ [轨一] 剧情世界观引擎推演完毕！")
+            # 【解包获取 debug 数据并发送】
+            plot_result, plot_debug = plot_future.result()
+            log_step("第一轨 (剧情)", "success", "✅ 剧情世界观推演完毕！", debug=plot_debug)
 
+            log_step("第三轨 (向量)", "processing", "⏳ 正在提取高光片段并进行向量打标...")
             vector_future = executor.submit(task_vector_engine, book_name, chapter_id, content, plot_result, ai_config)
 
-            entity_result = entity_future.result()
-            log_msg("✅ [轨二] 生灵势力引擎状态结算与挖掘完毕！")
+            # 【解包获取 debug 数据并发送】
+            entity_result, entity_debug = entity_future.result()
+            log_step("第二轨 (生灵)", "success", "✅ 生灵状态变动挖掘完毕！", debug=entity_debug)
 
-            vector_future.result()
-            log_msg("✅ [轨三] 高光片段向量存储与打标完毕！")
+            # 【获取向量的 debug 数据并发送】
+            vector_debug = vector_future.result()
+            log_step("第三轨 (向量)", "success", "✅ 高光片段已写入向量数据库！", debug=vector_debug)
 
-            log_msg("💾 [主控] 正在统筹合并所有维度数据，执行安全落盘...")
-            _process_and_save_results(book_name, chapter_id, plot_result, entity_result, context_payload['involved_chars'])
+            log_step("主控中心", "processing", "💾 正在统筹合并各维度数据，执行安全落盘...")
+            _process_and_save_results(book_name, chapter_id, plot_result, entity_result,
+                                      context_payload['involved_chars'])
+            log_step("主控中心", "success", "💾 数据安全落盘完毕！")
 
             q.put("DONE")
         except Exception as e:
-            log_msg(f"❌ 引擎运行出现错误: {str(e)}")
+            log_step("主控中心", "error", f"❌ 引擎运行出现错误: {str(e)}")
             q.put("DONE")
 
     threading.Thread(target=worker).start()
@@ -421,8 +440,8 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
     while True:
         msg = q.get()
         if msg == "DONE":
-            yield f"data: {json.dumps({'content': '🎉 三轨定稿全部完成！大纲、人设、势力全面推进！'})}\n\n"
+            yield f"data: {json.dumps({'type': 'step', 'engine': '完成', 'status': 'success', 'msg': '🎉 三轨定稿全部完成！'})}\n\n"
             yield "data: [DONE]\n\n"
             break
         else:
-            yield f"data: {json.dumps({'content': msg})}\n\n"
+            yield f"data: {json.dumps(msg)}\n\n"
