@@ -49,25 +49,13 @@ class VectorDAO:
             pass
 
     def delete_collection(self, book_name: str):
-        """核心新增：删除书籍时，彻底销毁 ChromaDB 中的对应集合以及物理文件夹"""
+        """核心新增：删除书籍时，彻底销毁 ChromaDB 中的对应集合"""
         safe_book_name = hashlib.md5(book_name.encode('utf-8')).hexdigest()
         collection_name = f"book_{safe_book_name}"
         try:
-            # 1. 先获取集合，拿到它在底层的 UUID
-            collection = self.client.get_collection(name=collection_name)
-            collection_id = str(collection.id)
-
-            # 2. 从 ChromaDB 中注销集合记录
+            # 只需要这一句！
             self.client.delete_collection(name=collection_name)
-
-            # 3. 顺藤摸瓜，强制物理删除硬盘残留的 UUID 文件夹
-            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'vector_db')
-            uuid_folder_path = os.path.join(db_path, collection_id)
-
-            if os.path.exists(uuid_folder_path):
-                shutil.rmtree(uuid_folder_path)  # 连根拔起！
-
-            print(f"已彻底删除向量库中《{book_name}》的全部数据及物理文件夹 {collection_id}。")
+            print(f"已彻底删除向量库中《{book_name}》的全部数据。")
         except Exception as e:
             print(f"删除向量集合时忽略报错: {e}")
             pass
