@@ -231,7 +231,8 @@ def task_vector_engine(book_name: str, chapter_id: int, content: str, plot_resul
 # =====================================================================
 # 流水线总控与数据落盘 (统一协调)
 # =====================================================================
-def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, entity_json: dict, involved_chars: list):
+def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, entity_json: dict,
+                              involved_chars: list):
     """处理并合并三个引擎的数据，执行状态机推进和日志追加"""
     storylines = dao.list_storylines(book_name)
     action_data = plot_json.get('storyline_action', {})
@@ -243,6 +244,7 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
     new_name = action_data.get('new_node_name') or f"新事件(第{chapter_id}章)"
 
     # --- 1. 处理剧情状态机 (NEXT_PREPLANNED, NEW_MAIN, NEW_SUB, INIT) ---
+    # 此处省略原有状态机大段逻辑，保持原有不动
     if action == 'INIT':
         bound_main_id = storylines[0]['id'] if storylines else "p_" + str(int(time.time() * 1000))
         bound_sub_id = "c_" + str(int(time.time() * 1000) + 1)
@@ -252,7 +254,6 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
                                           "content": action_data.get('sub_node_content', '起因'), "foreshadows": [],
                                           "is_completed": False}]
     else:
-        # 寻找指针
         active_main, active_sub = None, None
         for p in storylines:
             if p['id'] == bound_main_id:
@@ -265,7 +266,8 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
 
         if action == 'NEXT_PREPLANNED':
             if active_sub: active_sub['is_completed'] = True
-            next_sub = next((c for c in active_main.get('children', []) if not c.get('is_completed')), None) if active_main else None
+            next_sub = next((c for c in active_main.get('children', []) if not c.get('is_completed')),
+                            None) if active_main else None
             if next_sub:
                 bound_sub_id = next_sub['id']
                 if not next_sub.get('content'): next_sub['content'] = new_content
@@ -280,9 +282,10 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
                     else:
                         bound_sub_id = 'c_' + str(int(time.time() * 1000))
                         next_main['children'] = [
-                            {"id": bound_sub_id, "name": "起始事件", "content": new_content, "foreshadows": [], "is_completed": False}]
+                            {"id": bound_sub_id, "name": "起始事件", "content": new_content, "foreshadows": [],
+                             "is_completed": False}]
                 else:
-                    action = 'NEW_MAIN'  # 兜底
+                    action = 'NEW_MAIN'
 
         if action == 'NEW_MAIN':
             if active_main: active_main['is_completed'] = True
@@ -290,15 +293,19 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
             bound_main_id, bound_sub_id = 'p_' + str(int(time.time() * 1000)), 'c_' + str(int(time.time() * 1000) + 1)
             storylines.append({"id": bound_main_id, "name": new_name, "content": new_content, "foreshadows": [],
                                "is_completed": False, "children": [
-                    {"id": bound_sub_id, "name": "起始事件", "content": new_content, "foreshadows": [], "is_completed": False}]})
+                    {"id": bound_sub_id, "name": "起始事件", "content": new_content, "foreshadows": [],
+                     "is_completed": False}]})
         elif action == 'NEW_SUB':
             if active_sub: active_sub['is_completed'] = True
             bound_sub_id = 'c_' + str(int(time.time() * 1000))
             if active_main: active_main['children'].append(
-                {"id": bound_sub_id, "name": new_name, "content": new_content, "foreshadows": [], "is_completed": False})
+                {"id": bound_sub_id, "name": new_name, "content": new_content, "foreshadows": [],
+                 "is_completed": False})
 
-    # 伏笔自动绑定
-    fs_to_bind = [fs['name'] for fs in plot_json.get('planted_foreshadows', []) if fs.get('name')] + [fs for fs in plot_json.get('revealed_foreshadows', []) if fs]
+    fs_to_bind = [fs['name'] for fs in plot_json.get('planted_foreshadows', []) if fs.get('name')] + [fs for fs in
+                                                                                                      plot_json.get(
+                                                                                                          'revealed_foreshadows',
+                                                                                                          []) if fs]
     if fs_to_bind:
         for p in storylines:
             if p.get('id') == bound_main_id:
@@ -309,58 +316,79 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
                 break
     dao.update_storylines(book_name, storylines)
 
-    # 1. 提取本地预扫描到的 100% 准确的已知角色名单
-    known_char_names = [c['character_name'] for c in involved_chars]
+    # ================= 核心重构：彻底解决出场名单与新角色的联动 =================
 
-    # 2. 提取生灵引擎刚刚挖掘出的全新角色名单
     discoveries = entity_json.get('new_discoveries', {}) if entity_json else {}
+
+    # 1. 提取本地预扫描到的已知角色名单
+    known_char_names = [c['character_name'] for c in involved_chars]
+    # 2. 提取本章新挖掘的角色名单
     new_char_names = [nc.get('name') for nc in discoveries.get('new_characters', []) if nc.get('name')]
 
-    # 3. 提取剧情引擎识别的角色（作为弱补充，但需要做交集清洗，防止它乱造名字）
+    # 3. 提取发生了弧光和关系变化的角色（双重保险，有动作必出场）
+    changed_char_names = []
+    if entity_json:
+        for arc in entity_json.get('arc_changes', []):
+            if arc.get('character_name'): changed_char_names.append(arc['character_name'])
+        for rel in entity_json.get('relationship_changes', []):
+            if rel.get('subject'): changed_char_names.append(rel['subject'])
+
+    # 4. 构建最终绝对受控的角色大名单（去重合并）
+    final_involved_characters = list(set(known_char_names + new_char_names + changed_char_names))
+
+    # 如果剧情引擎也识别了某些在库角色，补全进去
     plot_chars_raw = plot_json.get('involved_characters', [])
-    all_db_chars = [c['character_name'] for c in dao.list_characters(book_name)]  # 全量角色库
-
-    # 4. 构建最终绝对受控的角色名单（去重）
-    final_involved_characters = list(set(known_char_names + new_char_names))
-
-    # 如果剧情引擎提取了角色，且该角色已经存在于数据库中，但由于别名等原因没被预扫描到，将其补全
+    all_db_chars = [c['character_name'] for c in dao.list_characters(book_name)]
     for pc in plot_chars_raw:
         if pc in all_db_chars and pc not in final_involved_characters:
             final_involved_characters.append(pc)
 
-    # --- 2. 写入分析数据与伏笔 ---
+    # --- 写入分析数据 ---
     dao.add_or_update_chapter_analysis(
         book_name, chapter_id,
         summary=plot_json.get('summary', ''),
         key_events=plot_json.get('key_events', []),
         story_position=action_data.get('progress_desc', plot_json.get('summary', '')),
         emotion_intensity=plot_json.get('emotion_intensity', 1),
-        involved_characters=final_involved_characters,  # <--- 核心修复：使用受控的最终名单
+        involved_characters=final_involved_characters,  # <--- 完美包含所有旧角色和新角色
         bound_main_node_id=bound_main_id,
         bound_sub_node_id=bound_sub_id
     )
+
     for fs in plot_json.get('planted_foreshadows', []):
-        if fs.get('name') and fs.get('content'): dao.add_foreshadow(book_name, fs['name'], chapter_id, fs['content'], status="埋设中")
+        if fs.get('name') and fs.get('content'): dao.add_foreshadow(book_name, fs['name'], chapter_id, fs['content'],
+                                                                    status="埋设中")
     for fs_name in plot_json.get('revealed_foreshadows', []):
         if fs_name: dao.update_foreshadow(book_name, fs_name, revealed_chapter=chapter_id, status="已揭示")
 
-    # --- 3. 处理实体状态变动 (追加日志与新发现) ---
+    # ================= 核心重构：处理实体状态变动 (赋值初始弧光和关系) =================
     if entity_json:
         current_chars = dao.list_characters(book_name)
         current_factions = dao.list_factions(book_name)
         is_char_changed, is_faction_changed = False, False
 
-        # 弧光追加
+        # 1. 弧光追加 (修改：同步更新 change_log 给前端文本框显示)
         for arc in entity_json.get('arc_changes', []):
             if arc.get('character_name') and arc.get('arc_detail'):
                 target = next((c for c in current_chars if c['character_name'] == arc['character_name']), None)
                 if target:
                     if 'arc_history' not in target: target['arc_history'] = []
-                    target['arc_history'].append({"chapter_id": chapter_id, "arc_summary": arc.get('arc_summary', ''),
-                                                  "arc_detail": f"【第{chapter_id}章】：{arc['arc_detail']}"})
+
+                    new_arc_detail = f"【第{chapter_id}章】：{arc['arc_detail']}"
+
+                    target['arc_history'].append({
+                        "chapter_id": chapter_id,
+                        "arc_summary": arc.get('arc_summary', ''),
+                        "arc_detail": new_arc_detail
+                    })
+
+                    # 【核心修复】：把新弧光换行追加到 change_log 里，保证前端文本框能看到历史
+                    old_log = target.get('change_log', '')
+                    target['change_log'] = f"{old_log}\n{new_arc_detail}".strip() if old_log else new_arc_detail
+
                     is_char_changed = True
 
-        # 关系追加
+        # 2. 关系追加 (原有逻辑保持不变)
         for rel in entity_json.get('relationship_changes', []):
             if rel.get('subject') and rel.get('target') and rel.get('relation_detail'):
                 subj = next((c for c in current_chars if c['character_name'] == rel['subject']), None)
@@ -373,33 +401,57 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
                     t_rel['history'].append(f"【第{chapter_id}章】：{rel['relation_detail']}")
                     is_char_changed = True
 
-        # 势力态势追加
-        for f_change in entity_json.get('faction_changes', []):
-            if f_change.get('faction_name') and f_change.get('change_detail'):
-                fac = next((f for f in current_factions if f['name'] == f_change['faction_name']), None)
-                if fac:
-                    if 'history_log' not in fac: fac['history_log'] = []
-                    fac['history_log'].append(f"【第{chapter_id}章】：{f_change['change_detail']}")
-                    is_faction_changed = True
-
-        # 挖掘新角色与势力
-        discoveries = entity_json.get('new_discoveries', {})
+        # 3. 挖掘新角色（修改：把初始弧光直接赋给 change_log）
         for nc in discoveries.get('new_characters', []):
             if nc.get('name') and not next((c for c in current_chars if c['character_name'] == nc['name']), None):
-                current_chars.append(
-                    {"character_name": nc['name'], "importance_level": 1, "profile": nc.get('profile', ''),
-                     "relationships": [], "change_log": f"第{chapter_id}章首次登场", "arc_history": []})
+
+                # 构建 AI 给出的初始人际关系
+                init_rels = []
+                for init_rel in nc.get('initial_relationships', []):
+                    if init_rel.get('target') and init_rel.get('relation_detail'):
+                        init_rels.append({
+                            "target": init_rel.get('target'),
+                            "history": [f"【第{chapter_id}章初见】：{init_rel.get('relation_detail')}"]
+                        })
+
+                # 构建 AI 给出的第一笔初始弧光
+                init_arc = []
+                change_log_text = f"第{chapter_id}章首次登场"  # 默认兜底
+
+                if nc.get('initial_arc'):
+                    arc_detail_str = f"【第{chapter_id}章登场】：{nc.get('initial_arc')}"
+                    init_arc.append({
+                        "chapter_id": chapter_id,
+                        "arc_summary": "初始登场状态",
+                        "arc_detail": arc_detail_str
+                    })
+                    # 【核心修复】：如果有初始弧光，直接替换掉兜底文字，写进文本框绑定的字段里
+                    change_log_text = arc_detail_str
+
+                # 装载全套血肉
+                current_chars.append({
+                    "character_name": nc['name'],
+                    "importance_level": 1,
+                    "profile": nc.get('profile', ''),
+                    "relationships": init_rels,
+                    "change_log": change_log_text,  # <--- 前端“弧光变化”文本框读这里
+                    "arc_history": init_arc  # <--- 前端侧边栏“近期弧光”读这里
+                })
                 is_char_changed = True
+
+        # 4. 挖掘新势力（同步更新初始动态）
         for nf in discoveries.get('new_factions', []):
             if nf.get('name') and not next((f for f in current_factions if f['name'] == nf['name']), None):
-                current_factions.append(
-                    {"name": nf['name'], "description": nf.get('description', ''), "key_figures": [],
-                     "history_log": [f"【第{chapter_id}章首次显露】：{nf.get('description', '')}"]})
+                current_factions.append({
+                    "name": nf['name'],
+                    "description": nf.get('description', ''),
+                    "key_figures": [],
+                    "history_log": [f"【第{chapter_id}章首次显露】：{nf.get('initial_status', nf.get('description', ''))}"]
+                })
                 is_faction_changed = True
 
         if is_char_changed: dao._save_json(os.path.join(dao.data_root, book_name, "characters.json"), current_chars)
         if is_faction_changed: dao._save_json(os.path.join(dao.data_root, book_name, "factions.json"), current_factions)
-
 
 def cleanup_chapter_data(book_name: str, chapter_id: int):
     dao.delete_chapter_analysis(book_name, chapter_id)
