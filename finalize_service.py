@@ -63,7 +63,7 @@ def build_entities_context(book_name: str, content: str) -> tuple:
 
             context_lines.append(f"  - 角色【{name}】 | 弧光演进: {arc_str} | 人际互动: {rel_str}")
 
-    # 打包势力快照
+    # 打包势力
     if involved_factions:
         context_lines.append("【涉及已知势力状态】:")
         for f in involved_factions:
@@ -181,6 +181,8 @@ def task_plot_engine(chapter_id: int, content: str, context: dict, ai_config: di
     response = ai_handler.chat([{"role": "user", "content": prompt}],
                                model=ai_config.get('model', 'openai/gpt-4o-mini'),
                                api_key=ai_config.get('api_key', ''),
+                               max_tokens=int(ai_config.get('max_tokens', 8192)),
+                               top_p=ai_config.get('top_p', 1.0),
                                temperature=0.2)
     raw_content = response.choices[0].message.content
     return clean_json_string(raw_content), {"prompt": prompt, "response": raw_content}
@@ -195,6 +197,8 @@ def task_entity_engine(content: str, context: dict, ai_config: dict):
     response = ai_handler.chat([{"role": "user", "content": prompt}],
                                model=ai_config.get('model', 'openai/gpt-4o-mini'),
                                api_key=ai_config.get('api_key', ''),
+                               max_tokens=int(ai_config.get('max_tokens', 8192)),
+                               top_p=ai_config.get('top_p', 1.0),
                                temperature=0.3)
     raw_content = response.choices[0].message.content
     return clean_json_string(raw_content), {"prompt": prompt, "response": raw_content}
@@ -209,6 +213,8 @@ def task_vector_engine(book_name: str, chapter_id: int, content: str, plot_resul
     response = ai_handler.chat([{"role": "user", "content": prompt}],
                                model=ai_config.get('model', 'openai/gpt-4o-mini'),
                                api_key=ai_config.get('api_key', ''),
+                               max_tokens=int(ai_config.get('max_tokens', 8192)),
+                               top_p=ai_config.get('top_p', 1.0),
                                temperature=0.3)
 
     # 【修改】：记录原始返回
@@ -303,13 +309,35 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
                 break
     dao.update_storylines(book_name, storylines)
 
+    # 1. 提取本地预扫描到的 100% 准确的已知角色名单
+    known_char_names = [c['character_name'] for c in involved_chars]
+
+    # 2. 提取生灵引擎刚刚挖掘出的全新角色名单
+    discoveries = entity_json.get('new_discoveries', {}) if entity_json else {}
+    new_char_names = [nc.get('name') for nc in discoveries.get('new_characters', []) if nc.get('name')]
+
+    # 3. 提取剧情引擎识别的角色（作为弱补充，但需要做交集清洗，防止它乱造名字）
+    plot_chars_raw = plot_json.get('involved_characters', [])
+    all_db_chars = [c['character_name'] for c in dao.list_characters(book_name)]  # 全量角色库
+
+    # 4. 构建最终绝对受控的角色名单（去重）
+    final_involved_characters = list(set(known_char_names + new_char_names))
+
+    # 如果剧情引擎提取了角色，且该角色已经存在于数据库中，但由于别名等原因没被预扫描到，将其补全
+    for pc in plot_chars_raw:
+        if pc in all_db_chars and pc not in final_involved_characters:
+            final_involved_characters.append(pc)
+
     # --- 2. 写入分析数据与伏笔 ---
     dao.add_or_update_chapter_analysis(
-        book_name, chapter_id, summary=plot_json.get('summary', ''), key_events=plot_json.get('key_events', []),
+        book_name, chapter_id,
+        summary=plot_json.get('summary', ''),
+        key_events=plot_json.get('key_events', []),
         story_position=action_data.get('progress_desc', plot_json.get('summary', '')),
         emotion_intensity=plot_json.get('emotion_intensity', 1),
-        involved_characters=plot_json.get('involved_characters', [c['character_name'] for c in involved_chars]),
-        bound_main_node_id=bound_main_id, bound_sub_node_id=bound_sub_id
+        involved_characters=final_involved_characters,  # <--- 核心修复：使用受控的最终名单
+        bound_main_node_id=bound_main_id,
+        bound_sub_node_id=bound_sub_id
     )
     for fs in plot_json.get('planted_foreshadows', []):
         if fs.get('name') and fs.get('content'): dao.add_foreshadow(book_name, fs['name'], chapter_id, fs['content'], status="埋设中")
