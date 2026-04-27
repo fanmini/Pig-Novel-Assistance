@@ -369,11 +369,26 @@
 
       // 【新增】判断节点是否为“当前进行中的活跃节点”
       function isActiveStorylineNode(nodeId) {
-          const flat = [];
-          storylineNodes.value.forEach(p => { flat.push(p); if(p.children) flat.push(...p.children); });
-          // 找到第一个未完成的节点，就是当前的 active 节点
-          const activeNode = flat.find(x => !x.is_completed);
-          return activeNode && activeNode.id === nodeId;
+          let activeMain = null;
+          let activeSub = null;
+
+          for (const p of storylineNodes.value) {
+              if (!p.is_completed) {
+                  activeMain = p; // 找到当前正在进行的大节点
+                  if (p.children) {
+                      for (const c of p.children) {
+                          if (!c.is_completed) {
+                              activeSub = c; // 找到当前正在进行的小节点
+                              break;
+                          }
+                      }
+                  }
+                  break; // 找到了就不再往后找了
+              }
+          }
+
+          // 如果当前渲染的节点是活跃的【大节点】，或者是活跃的【小节点】，都让它亮起蓝灯！
+          return (activeMain && activeMain.id === nodeId) || (activeSub && activeSub.id === nodeId);
       }
 
       // 【新增】根据章节ID，反向查找大节点和小节点的名称，用于分析模块展示

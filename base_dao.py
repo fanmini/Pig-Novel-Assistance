@@ -294,6 +294,91 @@ class NovelModel:
         return True
 
     # ==================== 伏笔、记忆包、故事线 ====================
+    def clean_storylines_by_chapter(self, book_name: str, chapter_id: int) -> bool:
+        """【新增】撤销指定章节对故事线造成的改变（时光倒流机制）"""
+        storylines = self.list_storylines(book_name)
+        is_changed = False
+
+        # 逆序遍历，方便在遍历时安全删除元素
+        for i in range(len(storylines) - 1, -1, -1):
+            main_node = storylines[i]
+
+            # 1. 如果这个大节点是本章新建的，连根拔起直接删掉
+            if main_node.get("created_by_chapter") == chapter_id:
+                del storylines[i]
+                is_changed = True
+                continue
+
+            # 2. 如果这个大节点是本章宣告完结的，撤销它的完结状态！
+            if main_node.get("completed_by_chapter") == chapter_id:
+                main_node["is_completed"] = False
+                main_node["completed_by_chapter"] = None
+                is_changed = True
+
+            # 3. 处理大节点里面的小节点（子节点）
+            if "children" in main_node:
+                children = main_node["children"]
+                for j in range(len(children) - 1, -1, -1):
+                    sub_node = children[j]
+
+                    # 如果小节点是本章新建的，删掉
+                    if sub_node.get("created_by_chapter") == chapter_id:
+                        del children[j]
+                        is_changed = True
+                        continue
+
+                    # 如果小节点是本章完结的，撤销完结状态
+                    if sub_node.get("completed_by_chapter") == chapter_id:
+                        sub_node["is_completed"] = False
+                        sub_node["completed_by_chapter"] = None
+                        is_changed = True
+
+        if is_changed:
+            self.update_storylines(book_name, storylines)
+
+        return is_changed
+
+    def clean_foreshadows_by_chapter(self, book_name: str, chapter_id: int) -> bool:
+        """【新增】清理指定章节产生的伏笔数据（重定稿时使用）"""
+        foreshadows = self.list_foreshadows(book_name)
+        new_fs = []
+        is_changed = False
+        deleted_names = []
+
+        for f in foreshadows:
+            # 情况 1：如果是本章刚“埋设”的伏笔 -> 直接将其删除（不加入新列表）
+            if f.get("planted_chapter") == chapter_id:
+                deleted_names.append(f.get("name"))
+                is_changed = True
+                continue
+
+            # 情况 2：如果是本章“揭示(填坑)”的伏笔 -> 撤销揭示状态，退回“埋设中”
+            if f.get("revealed_chapter") == chapter_id:
+                f["revealed_chapter"] = None
+                f["status"] = "埋设中"
+                is_changed = True
+
+            new_fs.append(f)
+
+        # 1. 保存清理后的伏笔文件
+        if is_changed:
+            self._save_json(os.path.join(self.data_root, book_name, "foreshadows.json"), new_fs)
+
+        # 2. 级联清理：如果彻底删除了某些伏笔，需要把故事线节点上绑定的对应名字也洗掉
+        if deleted_names:
+            storylines = self.list_storylines(book_name)
+            story_changed = False
+            for p in storylines:
+                for c in p.get("children", []):
+                    old_len = len(c.get("foreshadows", []))
+                    c["foreshadows"] = [name for name in c.get("foreshadows", []) if name not in deleted_names]
+                    if len(c["foreshadows"]) != old_len:
+                        story_changed = True
+            if story_changed:
+                self.update_storylines(book_name, storylines)
+
+        return is_changed
+
     def list_foreshadows(self, book_name: str) -> List[Dict[str, Any]]:
         return self._load_json(os.path.join(self.data_root, book_name, "foreshadows.json"), [])
 
