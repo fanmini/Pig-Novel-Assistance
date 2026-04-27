@@ -5,6 +5,7 @@ from flask import Blueprint, request, jsonify, Response
 from finalize_service import run_finalize_pipeline_stream, cleanup_chapter_data
 from ai_handler import ai_handler, load_ai_config, save_ai_config
 from base_dao import NovelModel
+from generate_service import generate_chapter_plan, query_vector_knowledge, generate_chapter_content_stream
 from vector_dao import vector_dao
 
 api_bp = Blueprint('api', __name__)
@@ -352,3 +353,76 @@ def update_ai_config():
     data = request.json
     save_ai_config(data)
     return jsonify({"status": "ok"})
+
+# --------- 章节生成-------------
+@api_bp.route('/ai/generate_plan', methods=['POST'])
+def ai_generate_plan():
+    """接口A：生成规划与检索词"""
+    data = request.json
+    book_name = data.get('book_name')
+    chapter_id = data.get('chapter_id')
+    user_draft = data.get('user_draft', '')
+
+    if not book_name or not chapter_id:
+        return jsonify({"error": "缺少参数"}), 400
+
+    plan_data = generate_chapter_plan(book_name, chapter_id, user_draft)
+    return jsonify(plan_data)
+
+
+@api_bp.route('/ai/query_vectors', methods=['POST'])
+def ai_query_vectors():
+    """接口B：执行向量检索试看"""
+    data = request.json
+    book_name = data.get('book_name')
+    tags = data.get('tags', [])
+
+    if not book_name or not tags:
+        return jsonify({"error": "缺少查询词"}), 400
+
+    results = query_vector_knowledge(book_name, tags)
+    return jsonify(results)
+
+
+@api_bp.route('/ai/generate_content/stream', methods=['POST'])
+def ai_generate_content_stream():
+    """接口C：最后一步，打字机流式生成正文"""
+    data = request.json
+    book_name = data.get('book_name')
+    chapter_id = data.get('chapter_id')
+    content_plan = data.get('content_plan', '')
+    selected_chars = data.get('selected_chars', [])
+    retrieved_snippets = data.get('retrieved_snippets', [])  # 这是前端确认没问题的片段集合
+
+    def generate():
+        try:
+            # 【修改】接收两个返回值：流 和 提示词
+            stream, prompt_text = generate_chapter_content_stream(
+                book_name, chapter_id, content_plan,
+                selected_chars, retrieved_snippets
+            )
+
+            # 【新增】在流式输出正文前，先下发一条特殊的 debug_info 消息
+            debug_data = {
+                "type": "debug_info",
+                "data": {
+                    "engine": "章节生成 - 第三阶段：正式执笔",
+                    "debug": {
+                        "prompt": prompt_text,
+                        "response": "（当前为流式输出，正文正实时打印在编辑器中...）"
+                    }
+                }
+            }
+            yield f"data: {json.dumps(debug_data)}\n\n"
+
+            # 之后再开始正常下发正文
+            for chunk in stream:
+                if ai_handler._stop_event.is_set(): break
+                content = chunk.choices[0].delta.content or ""
+                yield f"data: {json.dumps({'content': content})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return Response(generate(), mimetype='text/event-stream')

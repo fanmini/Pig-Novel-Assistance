@@ -60,4 +60,47 @@ class VectorDAO:
             print(f"删除向量集合时忽略报错: {e}")
             pass
 
+    def query_snippets(self, book_name: str, queries: list, n_results: int = 3) -> list:
+        """
+        核心新增：根据大模型生成的多个查询短句，去 ChromaDB 检索对应的历史高光片段
+        """
+        if not queries:
+            return []
+
+        safe_book_name = hashlib.md5(book_name.encode('utf-8')).hexdigest()
+        collection_name = f"book_{safe_book_name}"
+
+        try:
+            collection = self.client.get_collection(name=collection_name)
+            # 进行多 Query 批量检索
+            results = collection.query(
+                query_texts=queries,
+                n_results=n_results
+            )
+
+            # 整理返回结果格式，方便前端做手风琴折叠面板
+            # results 结构大概是: {'documents': [[doc1, doc2], [doc3]], 'metadatas': [[m1, m2], [m3]]}
+            formatted_results = []
+            for i, query in enumerate(queries):
+                snippets = []
+                docs = results.get('documents', [])[i] if results.get('documents') else []
+                metas = results.get('metadatas', [])[i] if results.get('metadatas') else []
+
+                for j, doc in enumerate(docs):
+                    meta = metas[j] if j < len(metas) else {}
+                    snippets.append({
+                        "content": doc,  # 这里的 doc 其实是当初存进去的 tags 的文本形式
+                        "original_text": meta.get('content', '原文丢失'),  # 我们需要把元数据里的原文拿出来
+                        "chapter_id": meta.get('chapter_id', '未知')
+                    })
+
+                formatted_results.append({
+                    "query": query,
+                    "snippets": snippets
+                })
+            return formatted_results
+        except Exception as e:
+            print(f"向量检索失败: {e}")
+            return []
+
 vector_dao = VectorDAO()
