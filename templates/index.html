@@ -11,16 +11,40 @@
         .app-container { display: flex; flex-direction: column; height: 100vh; }
         .top-bar { height: 44px; background: #fff; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; flex-shrink: 0; }
         .left-group { display: flex; align-items: center; gap: 6px; }
-        .book-manager { display: flex; align-items: center; background: #f8fafc; border-radius: 30px; border: 1px solid #e2e8f0; padding: 2px 4px; }
-        .book-selector { display: flex; align-items: center; padding: 0 6px; }
-        .book-selector span { margin-right: 4px; font-size: 14px; }
-        .book-selector select, .book-name-input { border: none; background: transparent; font-size: 14px; font-weight: 500; outline: none; cursor: pointer; padding: 6px 4px; min-width: 140px; border-radius: 20px; }
-        .book-name-input { min-width: 120px; padding: 6px 8px; background: white; border-radius: 20px; }
-        .delete-book-btn, .new-book-btn, .book-action-btn { background: none; border: none; font-size: 16px; cursor: pointer; padding: 4px 6px; border-radius: 20px; color: #64748b; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
+        /* 优化：增加外框的边距和一点点微阴影，看起来更舒展 */
+        .book-manager { display: flex; align-items: center; background: #f8fafc; border-radius: 30px; border: 1px solid #cbd5e1; padding: 4px 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); }
+        .book-selector { display: flex; align-items: center; padding: 0 8px; gap: 4px; }
+        .book-selector span { font-size: 16px; }
+
+        /* 优化：去掉原生的丑陋下拉箭头，使用精致的 SVG 箭头，增加点击区域 */
+        .book-selector select { border: none; background: transparent; font-size: 14px; font-weight: 600; outline: none; cursor: pointer; padding: 8px 30px 8px 8px; min-width: 150px; border-radius: 20px; color: #334155; appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e"); background-repeat: no-repeat; background-position: right 8px center; background-size: 14px; transition: color 0.2s; }
+        .book-selector select:hover { color: #0f172a; }
+
+        .book-name-input { border: none; outline: none; min-width: 140px; padding: 8px 12px; background: white; border-radius: 20px; font-size: 14px; font-weight: 500; }
+        .delete-book-btn, .new-book-btn, .book-action-btn { background: none; border: none; font-size: 16px; cursor: pointer; padding: 6px 8px; border-radius: 20px; color: #64748b; display: flex; align-items: center; justify-content: center; transition: 0.2s; margin-left: 2px; }
         .delete-book-btn:hover { background: #fee2e2; color: #ef4444; }
         .new-book-btn:hover { background: #e0f2fe; color: #0284c7; }
         .book-edit-actions { display: flex; gap: 2px; margin-left: 4px; }
-        .center-title { font-weight: 600; font-size: 14px; background: #f1f5f9; padding: 4px 14px; border-radius: 30px; }
+
+        /* 优化：当前书籍标题字号加大，颜色加深，留白更多 */
+        .center-title { font-weight: 700; font-size: 17px; background: #f1f5f9; padding: 6px 24px; border-radius: 30px; color: #0f172a; letter-spacing: 0.5px; border: 1px solid #e2e8f0; }
+
+        /* --- 自定义书籍下拉框样式 --- */
+        .custom-dropdown-container { position: relative; }
+        .custom-select { position: relative; min-width: 150px; padding: 8px 30px 8px 8px; cursor: pointer; font-size: 15px; font-weight: 600; color: #334155; user-select: none; border-radius: 20px; background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e"); background-repeat: no-repeat; background-position: right 8px center; background-size: 14px; }
+        .custom-select:hover { color: #0f172a; }
+
+        /* 展开的菜单面板：带阴影、圆角、白底 */
+        .custom-options-menu { position: absolute; top: 100%; left: 0; margin-top: 8px; background: white; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; overflow: hidden; z-index: 200; min-width: 180px; padding: 6px; }
+
+        /* 每一个列表项：宽敞的 padding、圆角、好看的 hover 效果 */
+        .custom-option-item { padding: 10px 16px; font-size: 14px; font-weight: 500; color: #475569; cursor: pointer; border-radius: 10px; transition: background-color 0.15s, color 0.15s; white-space: nowrap; }
+        .custom-option-item:hover { background: #f1f5f9; color: #0f172a; }
+
+        /* 当前选中的书籍打个高亮标识 */
+        .custom-option-item.active { background: #eef2ff; color: #3b82f6; font-weight: 600; }
+        .custom-option-item.disabled { color: #94a3b8; cursor: not-allowed; background: transparent; }
+
         .right-group { display: flex; gap: 10px; position: relative; }
         .save-dropdown { position: relative; }
         .save-btn { background: #3b82f6; color: white; border: none; padding: 4px 12px; border-radius: 30px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px; }
@@ -247,6 +271,11 @@
       }
 
       const books = ref([]);
+      const showBookDropdown = ref(false);
+      function selectBook(bookName) {
+          currentBook.value = bookName;
+          showBookDropdown.value = false;
+      }
       const currentBook = ref(null);
       const chapters = ref([]);
       const currentChapterId = ref(null);
@@ -270,9 +299,10 @@
       const memoryPacksList = ref([]);
 
       const roleActiveTab = ref('characters');
+
+
       // ========== 势力状态与方法 ==========
       const factionsList = ref([]);
-      const showFactionModal = ref(false);
       const editingFaction = ref(null);
       const factionForm = reactive({ name: '', description: '', history_log: '' });
 
@@ -284,16 +314,26 @@
           } catch (e) { console.error('加载势力失败', e); }
       }
 
-      function openFactionModal(faction = null) {
-          editingFaction.value = faction;
-          if (faction) {
-              factionForm.name = faction.name;
-              factionForm.description = faction.description;
-              factionForm.history_log = (faction.history_log || []).join('\n');
-          } else {
-              factionForm.name = ''; factionForm.description = ''; factionForm.history_log = '';
-          }
-          showFactionModal.value = true;
+      function newFaction() {
+          editingFaction.value = null;
+          factionForm.name = '';
+          factionForm.description = '';
+          factionForm.history_log = '';
+          editMode.value = 'faction';
+      }
+
+      function editFaction(faction) {
+          editingFaction.value = { ...faction };
+          factionForm.name = faction.name;
+          factionForm.description = faction.description;
+          factionForm.history_log = (faction.history_log || []).join('\n');
+          editMode.value = 'faction';
+      }
+
+      function cancelEditFaction() {
+          editMode.value = 'chapter';
+          editingFaction.value = null;
+          updateEditorFromChapter();
       }
 
       async function saveFaction() {
@@ -307,26 +347,39 @@
           if (isNew) {
               try {
                   await apiFetch(`${API_BASE}/books/${currentBook.value}/factions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: factionForm.name, ...payload }) });
-                  await loadFactions(); showToast('势力添加成功', 'success'); showFactionModal.value = false;
+                  await loadFactions();
+                  showToast('势力添加成功', 'success');
+                  editingFaction.value = { name: factionForm.name, ...payload };
               } catch (e) { showToast('保存失败', 'error'); }
           } else {
               const oldName = editingFaction.value.name;
               const newName = factionForm.name.trim();
               if (oldName !== newName) {
                   if (!confirm(`确定将势力“${oldName}”重命名为“${newName}”吗？`)) return;
-                  await apiFetch(`${API_BASE}/books/${currentBook.value}/factions/${oldName}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ new_name: newName, ...payload }) });
+                  try {
+                      await apiFetch(`${API_BASE}/books/${currentBook.value}/factions/${oldName}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ new_name: newName, ...payload }) });
+                      await loadFactions();
+                      showToast('势力重命名成功', 'success');
+                      editingFaction.value = { name: newName, ...payload };
+                  } catch (e) { showToast('重命名失败', 'error'); }
               } else {
-                  await apiFetch(`${API_BASE}/books/${currentBook.value}/factions/${oldName}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                  try {
+                      await apiFetch(`${API_BASE}/books/${currentBook.value}/factions/${oldName}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                      await loadFactions();
+                      showToast('势力更新成功', 'success');
+                      Object.assign(editingFaction.value, payload);
+                  } catch (e) { showToast('更新失败', 'error'); }
               }
-              await loadFactions(); showToast('势力更新成功', 'success'); showFactionModal.value = false;
           }
       }
 
       async function deleteFaction(name) {
-          if (!confirm(`确定删除势力“${name}”吗？`)) return;
+          // 移除浏览器的 confirm()，采用 UI 界面的确认框
           try {
               await apiFetch(`${API_BASE}/books/${currentBook.value}/factions/${name}`, { method: 'DELETE' });
-              await loadFactions(); showToast('删除成功', 'success');
+              await loadFactions();
+              showToast('删除成功', 'success');
+              deletingItemId.value = null; // 清除删除状态
           } catch (e) { showToast('删除失败', 'error'); }
       }
 
@@ -449,8 +502,8 @@
         nextTick(() => { document.querySelectorAll('.editor-field textarea').forEach(autoResizeTextarea); });
       }
 
-      watch([editMode, editingCharacter, editingMeta], () => {
-        if (['character', 'meta'].includes(editMode.value)) triggerAutoResize();
+      watch([editMode, editingCharacter, editingMeta, editingFaction], () => {
+        if (['character', 'meta', 'faction'].includes(editMode.value)) triggerAutoResize();
       });
       watch(editorContent, () => { if (editMode.value === 'meta') triggerAutoResize(); });
 
@@ -492,7 +545,22 @@
 
       let saveTimer; watch([editorTitle, editorContent], () => { if (editMode.value !== 'chapter' || !currentChapterId.value) return; clearTimeout(saveTimer); saveTimer = setTimeout(() => saveChapterSilently(), 800); });
       async function saveChapterSilently() { if (!currentBook.value || !currentChapterId.value) return; const ch = chapters.value.find(c => c.id === currentChapterId.value); if (!ch) return; const newTitle = editorTitle.value, newContent = editorContent.value; if (ch.title === newTitle && ch.content === newContent) return; const wordCount = newContent.replace(/[\r\n]/g, '').length; try { await apiFetch(`${API_BASE}/books/${currentBook.value}/chapters/${currentChapterId.value}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: newTitle, content: newContent }) }); ch.title = newTitle; ch.content = newContent; ch.word_count = wordCount; } catch (e) {} }
-      async function createChapter() { if (!currentBook.value) return showToast('请先选择书籍', 'error'); const newId = chapters.value.length ? Math.max(...chapters.value.map(c=>c.id)) + 1 : 1; try { await apiFetch(`${API_BASE}/books/${currentBook.value}/chapters`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: newId, title: `第${newId}章`, content: '', status: false }) }); await loadChapters(); currentChapterId.value = newId; showToast('章节已创建', 'success'); } catch (e) { showToast('创建失败', 'error'); } }
+      async function createChapter() {
+          if (!currentBook.value) return showToast('请先选择书籍', 'error');
+          const newId = chapters.value.length ? Math.max(...chapters.value.map(c=>c.id)) + 1 : 1;
+          try {
+              await apiFetch(`${API_BASE}/books/${currentBook.value}/chapters`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ id: newId, title: '', content: '', status: false })
+              });
+              await loadChapters();
+              currentChapterId.value = newId;
+              showToast('章节已创建', 'success');
+          } catch (e) {
+              showToast('创建失败', 'error');
+          }
+      }
       async function deleteChapter(chapterId) { if (!confirm('删除本章？')) return; try { await apiFetch(`${API_BASE}/books/${currentBook.value}/chapters/${chapterId}`, { method: 'DELETE' }); await loadChapters(); if (currentChapterId.value === chapterId) currentChapterId.value = chapters.value[0]?.id || null; showToast('删除成功', 'success'); } catch (e) { showToast('删除失败', 'error'); } }
 
       // ---------- 故事线管理 ----------
@@ -658,7 +726,7 @@
       function cancelEditCharacter() { editMode.value = 'chapter'; editingCharacter.value = null; updateEditorFromChapter(); }
       function startDelete(type, key) { deletingItemId.value = { type, key }; }
       function cancelDelete() { deletingItemId.value = null; }
-      function confirmDelete(type, key) { if (type === 'meta') deleteMeta(key); else if (type === 'foreshadow') deleteForeshadow(key); else if (type === 'memory') deleteMemoryPack(key); else if (type === 'character') deleteCharacter(key); }
+      function confirmDelete(type, key) { if (type === 'meta') deleteMeta(key); else if (type === 'foreshadow') deleteForeshadow(key); else if (type === 'memory') deleteMemoryPack(key); else if (type === 'character') deleteCharacter(key); else if (type === 'faction') deleteFaction(key);}
 
       async function loadAIModels() { try { aiModels.value = await apiFetch(`${API_BASE}/ai/models`); } catch (e) { showToast('加载模型列表失败', 'error'); } }
       async function loadAIConfig() { try { const config = await apiFetch(`${API_BASE}/ai/config`); aiConfig.model = config.model || aiConfig.model; aiConfig.api_key = config.api_key || ''; aiConfig.temperature = config.temperature ?? 0.7; aiConfig.max_tokens = config.max_tokens ?? 1024; aiConfig.top_p = config.top_p ?? 1.0; } catch (e) { showToast('加载配置失败', 'error'); } }
@@ -771,7 +839,10 @@
 
       function toggleSaveDropdown() { showSaveDropdown.value = !showSaveDropdown.value; }
       function handleSave(type) { showSaveDropdown.value = false; if (type === 'final') { triggerFinalize(false); } else if (type === 'reFinal') { triggerFinalize(true); } }
-      window.addEventListener('click', (e) => { if (!e.target.closest('.save-dropdown')) showSaveDropdown.value = false; });
+      window.addEventListener('click', (e) => {
+          if (!e.target.closest('.save-dropdown')) showSaveDropdown.value = false;
+          if (!e.target.closest('.custom-dropdown-container')) showBookDropdown.value = false;
+      });
 
       watch(activePanel, async (p) => {
         if (p === 'analysis') { await loadAnalysisData(); await loadCharacters(); }
@@ -785,6 +856,7 @@
         if (editMode.value === 'chapter') { await saveChapterSilently(); showToast('已保存', 'success'); }
         else if (editMode.value === 'meta') { if (editingMeta.value?.type === 'foreshadow') await saveForeshadow(); else if (editingMeta.value?.type === 'memory') await saveMemoryPack(); else if (editingMeta.value?.type === 'storyline') await saveStorylinesTree(); else await saveMeta(); }
         else if (editMode.value === 'character') { await saveCharacter(); }
+        else if (editMode.value === 'faction') { await saveFaction(); }
       }
 
       loadBooks();
@@ -793,35 +865,57 @@
         finalizeSteps,
         showDebugModal,
         selectedDebug,
-        roleActiveTab, factionsList, showFactionModal, editingFaction, factionForm,
-        loadFactions, openFactionModal, saveFaction, deleteFaction,
+        // 自定义书籍选择器
+        showBookDropdown, selectBook,
+
+        // 势力模块
+        roleActiveTab, factionsList, editingFaction, factionForm,
+        loadFactions, newFaction, editFaction, cancelEditFaction, saveFaction, deleteFaction,
+
+        // 故事线 & 伏笔查看相关
         viewingFsDetail, viewForeshadowDetail, isActiveStorylineNode, getNodeNamesForChapter,
         expandedForeshadowChapters, groupedForeshadows, toggleFsExpand,
-        toasts, showToast,
-        books, currentBook, chapters, currentChapterId, isEditingBookName, newBookName,
-        viewingFsDetail, viewForeshadowDetail, isActiveStorylineNode, getNodeNamesForChapter,
-        expandedForeshadowChapters, groupedForeshadows, toggleFsExpand,
+
+        // 基础模块
         toasts, showToast,
         books, currentBook, chapters, currentChapterId, isEditingBookName, newBookName,
         activePanel, expandedChapters, showAiSidebar, editMode, editingMeta, editingCharacter,
+
+        // 知识库缓存
         analysisCache, bookDetails, charactersList, sortedCharacters,
         foreshadowsList, memoryPacksList, kbActiveTab, storylineNodes, editingStorylineNode,
+
+        // 伏笔关联与管理
         fsModal, openFsModal, saveFsSelection, quickAddForeshadow,
+
+        // AI 模块
         aiMessages, aiInput, aiMode, aiInputExpanded, aiTextareaRef,
+        aiModels, aiConfig, isTestingConnection, testAiConnection, saveAIConfig,
+
+        // 核心表单与编辑器变量
         editorTitle, editorContent, charForm, foreshadowForm, memoryPackForm,
         modal, roleModal, deletingItemId, showSaveDropdown,
+
+        // 章节与全局操作
         createBook, deleteBook, loadChapters, createChapter, deleteChapter,
         toggleExpand, getAnalysis, openEditModal, openRoleModal, saveRoleSelection,
         saveAnalysisField, addKeyEvent, fieldLabel,
         editMeta, saveMeta, cancelEditMeta, deleteMeta, addNewMeta,
+
+        // 伏笔、记忆包等增删改查
         loadForeshadows, newForeshadow, editForeshadow, saveForeshadow, deleteForeshadow,
         loadMemoryPacks, newMemoryPack, editMemoryPack, saveMemoryPack, deleteMemoryPack,
-        isTailCompleted, isLastNode, editStorylineNode, addParentStoryline, addChildStoryline, deleteStorylineNode, updateStorylineProgress, saveStorylinesTree,
+
+        // 故事线操作
+        isTailCompleted, isLastNode, editStorylineNode, addParentStoryline, addChildStoryline,
+        deleteStorylineNode, updateStorylineProgress, saveStorylinesTree,
+
+        // 角色操作
         newCharacter, editCharacter, saveCharacter, deleteCharacter, cancelEditCharacter,
+
+        // 通用及其他
         manualSave, sendAiMessage, metaList, startDelete, cancelDelete, confirmDelete,
-        aiModels, aiConfig, autoResizeTextarea,
-        isTestingConnection, testAiConnection, saveAIConfig,
-        toggleSaveDropdown, handleSave,
+        autoResizeTextarea, toggleSaveDropdown, handleSave,
         importanceOptions: [{ value: 1, label: '龙套' }, { value: 2, label: '配角' }, { value: 3, label: '核心' }]
       };
     },
@@ -842,12 +936,21 @@
                 </div>
               </template>
               <template v-else>
-                <div class="book-selector">
+                <div class="book-selector custom-dropdown-container">
                   <span>📚</span>
-                  <select v-model="currentBook">
-                    <option v-for="b in books" :value="b">[[ b ]]</option>
-                    <option v-if="!books.length" disabled>暂无书籍</option>
-                  </select>
+                  <div class="custom-select" @click.stop="showBookDropdown = !showBookDropdown">
+                    <div class="selected-text">[[ currentBook || (books.length ? '请选择书籍' : '暂无书籍') ]]</div>
+
+                    <div v-if="showBookDropdown" class="custom-options-menu">
+                      <div v-for="b in books" :key="b"
+                           class="custom-option-item"
+                           :class="{ active: currentBook === b }"
+                           @click.stop="selectBook(b)">
+                        [[ b ]]
+                      </div>
+                      <div v-if="!books.length" class="custom-option-item disabled">暂无书籍</div>
+                    </div>
+                  </div>
                 </div>
                 <button class="delete-book-btn" v-if="currentBook" @click="deleteBook">✕</button>
                 <button class="new-book-btn" @click="isEditingBookName = true">➕</button>
@@ -1004,7 +1107,7 @@
                     <span>👥 实体档案</span>
                     <div class="panel-header-actions">
                         <span class="icon-btn" @click="roleActiveTab === 'characters' ? loadCharacters() : loadFactions()">🔄</span>
-                        <span class="icon-btn" @click="roleActiveTab === 'characters' ? newCharacter() : openFactionModal()">➕</span>
+                        <span class="icon-btn" @click="roleActiveTab === 'characters' ? newCharacter() : newFaction()">➕</span>
                     </div>
                 </div>
                 <div class="kb-tabs" style="border-bottom: none;">
@@ -1016,7 +1119,7 @@
             <div class="panel-content">
               <div v-show="roleActiveTab === 'characters'">
                   <div v-for="char in sortedCharacters" :key="char.character_name" class="character-card" @click="editCharacter(char)">
-                    <div class="character-info">
+                    <div class="character-info" style="flex: 1; overflow: hidden;">
                         <div class="character-name">[[ char.character_name ]]</div>
                         <div class="character-stars">[[ '★'.repeat(char.importance_level || 1) ]]</div>
                         <div style="margin-top: 6px; font-size: 12px; color: #475569;">
@@ -1028,18 +1131,19 @@
                             </div>
                         </div>
                     </div>
-                    <div v-if="deletingItemId?.type === 'character' && deletingItemId.key === char.character_name" class="delete-confirm">
-                      <button class="confirm-yes" @click.stop="confirmDelete('character', char.character_name)">删除</button>
+
+                    <div v-if="deletingItemId?.type === 'character' && deletingItemId.key === char.character_name" class="delete-confirm" style="flex-shrink: 0;">
+                      <button class="confirm-yes" @click.stop="confirmDelete('character', char.character_name)">确认删除</button>
                       <button class="confirm-no" @click.stop="cancelDelete">取消</button>
                     </div>
-                    <span v-else class="character-delete" style="margin-left: auto; cursor: pointer; color: #94a3b8; padding: 4px;" @click.stop="startDelete('character', char.character_name)">✕</span>
+                    <button v-else style="flex-shrink: 0; margin-left: 8px; background: #fee2e2; color: #ef4444; border: none; padding: 4px 10px; border-radius: 8px; font-size: 12px; cursor: pointer; transition: 0.2s;" @click.stop="startDelete('character', char.character_name)">🗑️ 删除</button>
                   </div>
                   <div v-if="!charactersList.length" style="padding:12px;color:#94a3b8;text-align:center;">暂无角色</div>
               </div>
 
               <div v-show="roleActiveTab === 'factions'">
-                  <div v-for="fac in factionsList" :key="fac.name" class="character-card" @click="openFactionModal(fac)">
-                      <div class="character-info">
+                  <div v-for="fac in factionsList" :key="fac.name" class="character-card" @click="editFaction(fac)">
+                      <div class="character-info" style="flex: 1; overflow: hidden;">
                           <div class="character-name">[[ fac.name ]]</div>
                           <div style="margin-top: 6px; font-size: 12px; color: #475569;">
                               <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><strong>宗旨：</strong>[[ fac.description || '暂无说明' ]]</div>
@@ -1050,7 +1154,12 @@
                               </div>
                           </div>
                       </div>
-                      <span class="character-delete" style="margin-left: auto; cursor: pointer; color: #94a3b8; padding: 4px;" @click.stop="deleteFaction(fac.name)">✕</span>
+
+                      <div v-if="deletingItemId?.type === 'faction' && deletingItemId.key === fac.name" class="delete-confirm" style="flex-shrink: 0;">
+                          <button class="confirm-yes" @click.stop="confirmDelete('faction', fac.name)">确认删除</button>
+                          <button class="confirm-no" @click.stop="cancelDelete">取消</button>
+                      </div>
+                      <button v-else style="flex-shrink: 0; margin-left: 8px; background: #fee2e2; color: #ef4444; border: none; padding: 4px 10px; border-radius: 8px; font-size: 12px; cursor: pointer; transition: 0.2s;" @click.stop="startDelete('faction', fac.name)">🗑️ 删除</button>
                   </div>
                   <div v-if="!factionsList.length" style="padding:12px;color:#94a3b8;text-align:center;">暂无势力</div>
               </div>
@@ -1077,7 +1186,18 @@
           <div class="main-editor">
             <div v-if="editMode === 'chapter'" class="editor-full">
               <div class="editor-container">
-                <input type="text" v-model="editorTitle" class="chapter-title-input" placeholder="章节标题">
+
+                <div style="display: flex; align-items: baseline; border-bottom: 2px solid #e2e8f0; margin-bottom: 20px;">
+
+                    <span style="font-size: 28px; font-weight: 700; color: #1e293b; user-select: none; margin-right: 12px; white-space: nowrap;">
+                        第[[ currentChapterId ]]章
+                    </span>
+
+                    <input type="text" v-model="editorTitle"
+                           style="flex: 1; font-size: 28px; font-weight: 700; border: none; outline: none; background: transparent; padding: 12px 0; color: #1e293b;"
+                           placeholder="本章标题">
+                </div>
+
                 <textarea v-model="editorContent" class="chapter-content-textarea" placeholder="正文内容..."></textarea>
               </div>
             </div>
@@ -1089,6 +1209,7 @@
                   <span v-else-if="editMode === 'meta' && editingMeta?.type === 'memory'">📦 区间记忆包</span>
                   <span v-else-if="editMode === 'meta' && editingMeta?.type === 'storyline'">🗺️ 故事线节点</span>
                   <span v-else-if="editMode === 'character'">🧑 编辑角色</span>
+                  <span v-else-if="editMode === 'faction'">🏛️ 编辑势力</span>
                 </div>
                 <div class="editor-body">
                   <template v-if="editMode === 'meta' && !editingMeta?.type">
@@ -1143,6 +1264,23 @@
                     <div class="editor-field"><label>关系网</label><textarea v-model="charForm.relationships" @input="autoResizeTextarea" placeholder="例如: 张三: 朋友, 李四: 导师 (每行一条)"></textarea></div>
                     <div class="editor-actions"><button class="modal-btn secondary" @click="cancelEditCharacter">取消</button><button class="modal-btn primary" @click="saveCharacter">保存角色</button></div>
                   </template>
+
+                  <template v-else-if="editMode === 'faction'">
+                    <div class="editor-field"><label>势力名称</label><input v-model="factionForm.name"></div>
+                    <div class="editor-field">
+                        <label>宗旨底色</label>
+                        <textarea v-model="factionForm.description" @input="autoResizeTextarea" placeholder="详细描述该势力的核心底色和组织目的..."></textarea>
+                    </div>
+                    <div class="editor-field">
+                        <label>历史动态</label>
+                        <textarea v-model="factionForm.history_log" @input="autoResizeTextarea" placeholder="势力发展记录（每行一条）"></textarea>
+                    </div>
+                    <div class="editor-actions">
+                        <button class="modal-btn secondary" @click="cancelEditFaction">取消</button>
+                        <button class="modal-btn primary" @click="saveFaction">保存势力</button>
+                    </div>
+                  </template>
+
                 </div>
               </div>
             </div>

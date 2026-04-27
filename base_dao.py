@@ -294,6 +294,68 @@ class NovelModel:
         return True
 
     # ==================== 伏笔、记忆包、故事线 ====================
+    def clean_entities_by_chapter(self, book_name: str, chapter_id: int) -> bool:
+        """【新增】时光倒流：清理指定章节产生的角色和势力动态"""
+        # 1. 角色清理
+        characters = self.list_characters(book_name)
+        char_changed = False
+        chars_to_keep = []
+
+        for char in characters:
+            # 清理弧光历史
+            original_arc_len = len(char.get("arc_history", []))
+            char["arc_history"] = [arc for arc in char.get("arc_history", []) if arc.get("chapter_id") != chapter_id]
+
+            # 清理关系网历史
+            if "relationships" in char:
+                for rel in char["relationships"]:
+                    rel["history"] = [h for h in rel.get("history", []) if not h.startswith(f"【第{chapter_id}章")]
+
+            # 同步重构 change_log (去除该章节的内容)
+            if char.get("change_log"):
+                logs = char["change_log"].split('\n')
+                new_logs = [log for log in logs if f"第{chapter_id}章" not in log]
+                if len(logs) != len(new_logs):
+                    char["change_log"] = '\n'.join(new_logs)
+                    char_changed = True
+
+            if original_arc_len != len(char.get("arc_history", [])):
+                char_changed = True
+
+            # 如果这个角色完全是在这一章创建的，并且清理后啥也没了，可以选择彻底移除
+            if not char.get("change_log") and not char.get("arc_history") and not char.get("profile"):
+                char_changed = True
+                continue  # 丢弃这个空壳角色
+
+            chars_to_keep.append(char)
+
+        if char_changed:
+            self._save_json(os.path.join(self.data_root, book_name, "characters.json"), chars_to_keep)
+
+        # 2. 势力清理
+        factions = self.list_factions(book_name)
+        fac_changed = False
+        facs_to_keep = []
+
+        for fac in factions:
+            original_log_len = len(fac.get("history_log", []))
+            fac["history_log"] = [log for log in fac.get("history_log", []) if not log.startswith(f"【第{chapter_id}章")]
+
+            if original_log_len != len(fac.get("history_log", [])):
+                fac_changed = True
+
+            # 如果历史动态全被清空了，且没有描述，彻底移除空壳势力
+            if not fac.get("history_log") and not fac.get("description"):
+                fac_changed = True
+                continue
+
+            facs_to_keep.append(fac)
+
+        if fac_changed:
+            self._save_json(os.path.join(self.data_root, book_name, "factions.json"), facs_to_keep)
+
+        return char_changed or fac_changed
+
     def clean_storylines_by_chapter(self, book_name: str, chapter_id: int) -> bool:
         """【新增】撤销指定章节对故事线造成的改变（时光倒流机制）"""
         storylines = self.list_storylines(book_name)

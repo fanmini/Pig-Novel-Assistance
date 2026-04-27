@@ -2,7 +2,7 @@ import json
 import uuid
 
 from flask import Blueprint, request, jsonify, Response
-from finalize_service import  run_finalize_pipeline_stream
+from finalize_service import run_finalize_pipeline_stream, cleanup_chapter_data
 from ai_handler import ai_handler, load_ai_config, save_ai_config
 from base_dao import NovelModel
 from vector_dao import vector_dao
@@ -80,9 +80,18 @@ def update_chapter(book_name, chapter_id):
 
 @api_bp.route('/books/<book_name>/chapters/<int:chapter_id>', methods=['DELETE'])
 def delete_chapter(book_name, chapter_id):
+    # 1. 核心修复：在删除章节物理文件之前，先触发时光倒流机制
+    # 把这章产出的：伏笔、故事线推演、角色弧光、新势力、向量数据库 全部洗刷干净
+    try:
+        cleanup_chapter_data(book_name, chapter_id)
+    except Exception as e:
+        print(f"执行章节时光倒流清理失败: {e}")
+
+    # 2. 最后再删除章节自身的基础信息
     success = dao.delete_chapter(book_name, chapter_id)
+
     if success:
-        return jsonify({'message': '删除成功'})
+        return jsonify({'message': '删除及关联数据清理成功'})
     return jsonify({'error': '删除失败'}), 400
 
 

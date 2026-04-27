@@ -534,7 +534,8 @@ def cleanup_chapter_data(book_name: str, chapter_id: int):
     dao.clean_foreshadows_by_chapter(book_name, chapter_id)
     # 故事线时光倒流：抹除本章对故事线节点的创建与完结记录
     dao.clean_storylines_by_chapter(book_name, chapter_id)
-
+    # 实体时光倒流：抹除本章对角色、势力产生的弧光、关系、新兵种的影响
+    dao.clean_entities_by_chapter(book_name, chapter_id)
 
 # =====================================================================
 # 主流程串联 (彻底贯彻双轨并发 + 单轨串行的时序逻辑)
