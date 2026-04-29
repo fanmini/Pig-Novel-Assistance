@@ -50,7 +50,8 @@ class NovelModel:
         self._save_json(os.path.join(book_folder, "characters.json"), [])
         self._save_json(os.path.join(book_folder, "foreshadows.json"), [])
         self._save_json(os.path.join(book_folder, "memory_packs.json"), [])
-        self._save_json(os.path.join(book_folder, "factions.json"), [])  # 【新增】势力分布存储
+        self._save_json(os.path.join(book_folder, "factions.json"), [])
+        self._save_json(os.path.join(book_folder, "vector_tags.json"), [])
 
         # 【故事线冷启动初始化】
         default_storylines = [{
@@ -473,6 +474,32 @@ class NovelModel:
     def update_storylines(self, book_name: str, nodes: List[Dict[str, Any]]) -> bool:
         self._save_json(os.path.join(self.data_root, book_name, "storylines.json"), nodes)
         return True
+
+    # ==================== 向量标签相关操作 ====================
+    def list_vector_tags(self, book_name: str) -> List[Dict[str, Any]]:
+        return self._load_json(os.path.join(self.data_root, book_name, "vector_tags.json"), [])
+
+    def add_vector_tags(self, book_name: str, chapter_id: int, tags: List[str]) -> bool:
+        """保存一章的所有向量标签，自动去重并按章节排序"""
+        all_tags = self.list_vector_tags(book_name)
+        target = next((t for t in all_tags if t.get("chapter_id") == chapter_id), None)
+        if target:
+            target["tags"] = list(set(target.get("tags", []) + tags))
+        else:
+            all_tags.append({"chapter_id": chapter_id, "tags": list(set(tags))})
+
+        all_tags.sort(key=lambda x: x["chapter_id"])
+        self._save_json(os.path.join(self.data_root, book_name, "vector_tags.json"), all_tags)
+        return True
+
+    def clean_vector_tags_by_chapter(self, book_name: str, chapter_id: int) -> bool:
+        """时光倒流：清理指定章节的向量标签"""
+        all_tags = self.list_vector_tags(book_name)
+        new_tags = [t for t in all_tags if t.get("chapter_id") != chapter_id]
+        if len(new_tags) != len(all_tags):
+            self._save_json(os.path.join(self.data_root, book_name, "vector_tags.json"), new_tags)
+            return True
+        return False
 
     def _load_json(self, file_path: str, default=None):
         if not os.path.exists(file_path): return default if default is not None else {}

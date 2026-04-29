@@ -368,13 +368,25 @@
                   body: JSON.stringify({ book_name: currentBook.value, chapter_id: currentChapterId.value, user_draft: draft })
               });
 
-              // 替换 loading 消息为【规划就绪卡片】
+              // 修改：把原来的弹窗按钮独立出来
               const targetMsg = aiMessages.value.find(m => m.id === msgId + 1);
               if (targetMsg) {
                   targetMsg.type = 'plan_ready';
                   targetMsg.planData = res;
                   targetMsg.content = '💡 章节生成规划已就绪！\n点击此处打开【共创面板】进行微调与检索。';
               }
+
+              // 【新增】：再单独推送一条卡片，专门用来查看推理日志
+              if (res.debug_info) {
+                  aiMessages.value.push({
+                      id: msgId + 2,
+                      role: 'assistant',
+                      type: 'debug_card', // 新的类型
+                      content: '🔍 点击查看主编 AI 推理日志',
+                      debug_info: res.debug_info
+                  });
+              }
+              nextTick(adjustAiTextareaHeight);
           } catch (e) {
               showToast('规划生成失败: ' + e.message, 'error');
               aiMessages.value = aiMessages.value.filter(m => m.type !== 'loading');
@@ -394,7 +406,31 @@
 
       // 添加/删除 标签输入框
       function addTagInput() { genModal.suggested_tags.push({ value: '' }); }
-      function removeTagInput(index) { genModal.suggested_tags.splice(index, 1); }
+      function removeTagInput(index) {
+          const removedTag = genModal.suggested_tags[index].value.trim();
+          genModal.suggested_tags.splice(index, 1);
+
+          // 【核心联动】：如果刚才删掉的标签已经检索出了片段，同步将其踢出 UI
+          if (removedTag && genModal.retrieved_results.length > 0) {
+              genModal.retrieved_results = genModal.retrieved_results.filter(res => res.query !== removedTag);
+          }
+      }
+
+      const allVectorTags = ref([]);
+      const tagsModalVisible = ref(false);
+
+      async function openTagsModal() {
+          if (!currentBook.value) return;
+          try {
+              allVectorTags.value = await apiFetch(`${API_BASE}/books/${currentBook.value}/vector_tags`);
+              tagsModalVisible.value = true;
+          } catch(e) { showToast('加载知识库标签失败', 'error'); }
+      }
+
+      function quickAddTag(tag) {
+          genModal.suggested_tags.push({ value: tag });
+          showToast('已添加入检索队列', 'success');
+      }
 
       // 3. 点击“试检索”，去知识库查询
       async function queryGenVectors() {
@@ -822,7 +858,44 @@
       function addParentStoryline() { storylineNodes.value.push({ id: 'p_'+Date.now(), name: '新大节点', content: '', foreshadows: [], is_completed: false, children: [] }); saveStorylinesTree(); }
       function addChildStoryline(parent) { if (!parent.children) parent.children = []; parent.children.push({ id: 'c_'+Date.now(), name: '新小节点', content: '', foreshadows: [], is_completed: false }); saveStorylinesTree(); }
       function deleteStorylineNode(nodeId, parentId) { if (!confirm('确定删除此节点吗？相关数据将无法恢复。')) return; if (parentId) { const p = storylineNodes.value.find(x => x.id === parentId); if (p) p.children = p.children.filter(x => x.id !== nodeId); } else { storylineNodes.value = storylineNodes.value.filter(x => x.id !== nodeId); } if (editingStorylineNode.value?.id === nodeId) { editMode.value = 'chapter'; editingStorylineNode.value = null; } saveStorylinesTree(); }
-      function updateStorylineProgress() { if (!editingStorylineNode.value) return; const targetId = editingStorylineNode.value.id; let found = false; for (const p of storylineNodes.value) { if (!found) p.is_completed = true; else p.is_completed = false; if (p.id === targetId) found = true; if (p.children) { for (const c of p.children) { if (!found) c.is_completed = true; else c.is_completed = false; if (c.id === targetId) found = true; } } } saveStorylinesTree(); }
+      function updateStorylineProgress() {
+          if (!editingStorylineNode.value) return;
+          const targetId = editingStorylineNode.value.id;
+          let targetFound = false; // 是否已经遍历到了目标节点
+
+          for (const p of storylineNodes.value) {
+              // 判断当前的大节点，是不是目标节点，或者是否包含了目标小节点
+              let pContainsTarget = (p.id === targetId) || (p.children && p.children.some(c => c.id === targetId));
+
+              if (!targetFound && !pContainsTarget) {
+                  // 1. 完全在目标节点之前的大节点 -> 全部完结
+                  p.is_completed = true;
+                  if (p.children) p.children.forEach(c => c.is_completed = true);
+              } else if (pContainsTarget) {
+                  // 2. 正好是包含目标节点的大节点 -> 大节点本身【未完结】
+                  p.is_completed = false;
+                  targetFound = true;
+                  let childFound = false;
+
+                  if (p.children) {
+                      for (const c of p.children) {
+                          if (c.id === targetId) {
+                              childFound = true;
+                              c.is_completed = false; // 目标小节点本身【未完结】
+                          } else {
+                              // 在目标小节点之前的完结，之后的未完结
+                              c.is_completed = !childFound;
+                          }
+                      }
+                  }
+              } else {
+                  // 3. 完全在目标节点之后的未来大节点 -> 全部未完结
+                  p.is_completed = false;
+                  if (p.children) p.children.forEach(c => c.is_completed = false);
+              }
+          }
+          saveStorylinesTree();
+      }
 
       // 关联伏笔弹窗交互
       function openFsModal() {
@@ -1135,6 +1208,7 @@
         slBindModal, openStorylineBindModal, saveStorylineBind,
 
         // 章节生成
+        allVectorTags, tagsModalVisible, openTagsModal, quickAddTag,
         genModal, openGenModal, addTagInput, removeTagInput, queryGenVectors, toggleSnippetExclude, confirmGenerateChapter,viewDebug,
 
         // 自定义书籍选择器
@@ -1293,9 +1367,9 @@
             <div class="panel-header"><span>📖 知识库</span><div class="panel-header-actions"><span class="icon-btn" @click="loadBookDetails; loadForeshadows; loadMemoryPacks; loadStorylines">🔄</span><span class="icon-btn" @click="kbActiveTab==='book' ? addNewMeta() : (kbActiveTab==='foreshadow' ? newForeshadow() : (kbActiveTab==='memory' ? newMemoryPack() : addParentStoryline()))">➕</span></div></div>
             <div class="kb-tabs">
               <div class="kb-tab" :class="{ active: kbActiveTab === 'book' }" @click="kbActiveTab = 'book'">书籍知识</div>
-              <div class="kb-tab" :class="{ active: kbActiveTab === 'foreshadow' }" @click="kbActiveTab = 'foreshadow'">伏笔信息</div>
-              <div class="kb-tab" :class="{ active: kbActiveTab === 'memory' }" @click="kbActiveTab = 'memory'">区间记忆包</div>
               <div class="kb-tab" :class="{ active: kbActiveTab === 'storyline' }" @click="kbActiveTab = 'storyline'">故事线</div>
+              <div class="kb-tab" :class="{ active: kbActiveTab === 'foreshadow' }" @click="kbActiveTab = 'foreshadow'">伏笔信息</div>
+              <div class="kb-tab" :class="{ active: kbActiveTab === 'memory' }" @click="kbActiveTab = 'memory'">记忆包</div>
             </div>
             <div class="panel-content">
               <template v-if="kbActiveTab === 'book'">
@@ -1560,7 +1634,6 @@
           <div class="ai-sidebar" v-show="showAiSidebar">
             <div class="ai-header"><span>🤖 文形小助手</span></div>
             <div class="ai-messages">
-
               <template v-if="finalizeSteps.length">
                   <div v-for="step in finalizeSteps" :key="step.engine"
                        class="finalize-step-card"
@@ -1579,15 +1652,19 @@
               </template>
 
               <template v-else>
-                  <div v-for="msg in aiMessages" :key="msg.id" class="message" :class="[msg.role, { 'plan-ready': msg.type === 'plan_ready' }]">
-                    <div class="message-bubble" @click="msg.type === 'plan_ready' ? openGenModal(msg.planData) : null">
+                  <div v-for="msg in aiMessages" :key="msg.id" class="message" :class="[msg.role, { 'plan-ready': msg.type === 'plan_ready' || msg.type === 'debug_card' }]">
+
+                    <div class="message-bubble"
+                         @click="msg.type === 'plan_ready' ? openGenModal(msg.planData) : (msg.type === 'debug_card' ? viewDebug(msg.debug_info) : null)"
+                         :style="msg.type === 'debug_card' ? 'background:#f8fafc; border: 1px dashed #cbd5e1; color:#475569; cursor:pointer;' : ''">
+
                         <span style="white-space: pre-wrap;">[[ msg.content ]]</span>
 
                         <div v-if="msg.debug_info && msg.type === 'generating'" style="margin-top: 8px; border-top: 1px solid #e2e8f0; padding-top: 8px;">
                             <button class="modal-btn secondary" style="font-size:11px; padding:2px 8px; background:#fff;" @click.stop="viewDebug(msg.debug_info)">🔍 查看本章投喂源码</button>
                         </div>
-
                     </div>
+
                   </div>
               </template>
 
@@ -1711,6 +1788,36 @@
           </div>
         </div>
 
+        <div v-if="tagsModalVisible" class="modal-overlay" @click.self="tagsModalVisible = false" style="z-index: 1050;">
+          <div class="modal" style="width: 600px;">
+            <h3>📚 全书知识库片段标签一览</h3>
+            <div style="margin-bottom:12px; font-size:12px; color:#64748b;">
+                点击下方的标签，即可直接将其加入到本次检索队列中。
+            </div>
+
+            <div style="max-height: 400px; overflow-y: auto; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px;">
+                <div v-if="!allVectorTags.length" style="text-align:center; color:#94a3b8; padding: 20px;">
+                    知识库空空如也，快去写点精彩剧情并定稿吧！
+                </div>
+
+                <div v-for="vt in allVectorTags" :key="vt.chapter_id" style="margin-bottom: 16px;">
+                    <div style="font-size:13px; font-weight:600; color:#1e293b; margin-bottom:8px; border-left: 3px solid #3b82f6; padding-left: 6px;">
+                        第 [[ vt.chapter_id ]] 章
+                    </div>
+                    <div class="role-tags">
+                        <span v-for="tag in vt.tags" :key="tag" class="role-tag" @click="quickAddTag(tag)" style="background:#fff; border: 1px dashed #cbd5e1; cursor: pointer;" title="点击添加">
+                            [[ tag ]] ➕
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-actions">
+              <button class="modal-btn primary" @click="tagsModalVisible = false">关闭</button>
+            </div>
+          </div>
+        </div>
+
         <div v-if="genModal.visible" class="modal-overlay" @click.self="genModal.visible = false">
           <div class="modal gen-modal">
 
@@ -1769,9 +1876,14 @@
                                 </div>
                                 <button class="add-event-btn" @click="addTagInput">+ 添加检索词</button>
                             </div>
-                            <button class="modal-btn" style="background:#10b981; color:white; margin-left:16px; margin-top:2px;" @click="queryGenVectors" :disabled="genModal.isQuerying">
-                                [[ genModal.isQuerying ? '检索中...' : '🔍 开始试检索' ]]
-                            </button>
+                            <div style="display:flex; flex-direction:column; gap:8px; margin-left:16px;">
+                                <button class="modal-btn" style="background:#10b981; color:white;" @click="queryGenVectors" :disabled="genModal.isQuerying">
+                                    [[ genModal.isQuerying ? '检索中...' : '🔍 开始试检索' ]]
+                                </button>
+                                <button class="modal-btn secondary" @click="openTagsModal" style="font-size:12px; padding:6px 12px;">
+                                    📚 查看知识库已有标签
+                                </button>
+                            </div>
                         </div>
 
                         <div v-if="genModal.retrieved_results.length" style="margin-top:20px; border-top:1px dashed #cbd5e1; padding-top:16px;">

@@ -19,23 +19,30 @@ def clean_json_string(text: str) -> dict:
 def generate_chapter_plan(book_name: str, chapter_id: int, user_draft: str) -> dict:
     """阶段一：接收用户草稿，生成【规划】与【检索词】"""
     ai_config = load_ai_config()
-
-    # 1. 抓取上下文
     global_knowledge = build_global_knowledge(book_name)
+
+    # 【时光倒流1】：如果这章以前定稿过，强行找回它的老节点，屏蔽后续大纲
     storylines = dao.list_storylines(book_name)
-    active_main_id = next((p['id'] for p in storylines if not p.get('is_completed')), "")
+    analyses = dao.list_chapter_analyses(book_name)
+    existing_analysis = next((an for an in analyses if an.get("chapter_id") == chapter_id), None)
+    active_main_id = existing_analysis.get("bound_main_node_id") if existing_analysis else ""
+
+    if not active_main_id:
+        active_main_id = next((p['id'] for p in storylines if not p.get('is_completed')), "")
 
     macro_storyline = build_macro_storyline(book_name, active_main_id)
-    micro_details = build_micro_details(book_name, chapter_id)  # 自动查出最近10章详情和伏笔内容
+    micro_details = build_micro_details(book_name, chapter_id)
 
-    # 嗅探逻辑：只要知识库里的角色/势力名在草稿里出现了，就把它的生命周期档案拉出来
     all_chars = dao.list_characters(book_name)
     all_factions = dao.list_factions(book_name)
     involved_chars = [c['character_name'] for c in all_chars if c['character_name'] in user_draft]
     involved_factions = [f['name'] for f in all_factions if f['name'] in user_draft]
 
-    entities_context = build_full_lifecycle_entities(book_name, char_names=involved_chars,
-                                                     faction_names=involved_factions)
+    # 【时光倒流2】：传 max_chapter_id 屏蔽未来的人物和势力档案
+    entities_context = build_full_lifecycle_entities(
+        book_name, char_names=involved_chars,
+        faction_names=involved_factions, max_chapter_id=chapter_id
+    )
 
     # 2. 组装 Prompt (将新增的变量填入格式化字符串)
     prompt = PROMPT_PLAN_AND_QUERY.format(
@@ -81,7 +88,7 @@ def generate_chapter_content_stream(book_name: str, chapter_id: int, content_pla
     global_knowledge = build_global_knowledge(book_name)
 
     # 【核心：Context Control】只投喂前端用户打勾选中的角色和势力！
-    entities_context = build_full_lifecycle_entities(book_name, char_names=selected_chars)
+    entities_context = build_full_lifecycle_entities(book_name, char_names=selected_chars, max_chapter_id=chapter_id)
 
     # 拼装从知识库搜出来的结果文本
     snippets_text = "暂无相关历史片段。"

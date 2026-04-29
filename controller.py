@@ -388,6 +388,11 @@ def ai_query_vectors():
     return jsonify(results)
 
 
+@api_bp.route('/books/<book_name>/vector_tags', methods=['GET'])
+def get_vector_tags(book_name):
+    return jsonify(dao.list_vector_tags(book_name))
+
+
 @api_bp.route('/ai/generate_content/stream', methods=['POST'])
 def ai_generate_content_stream():
     """接口C：最后一步，打字机流式生成正文"""

@@ -1,8 +1,31 @@
 # context_builder.py
+import re
+
 from base_dao import NovelModel
 
 dao = NovelModel()
 
+def _filter_future_logs(log_str: str, max_chapter_id: int) -> str:
+    """辅助：滤除大于等于 max_chapter_id 的历史记录"""
+    if not log_str: return ""
+    lines = log_str.split('\n')
+    valid_lines = []
+    for line in lines:
+        match = re.search(r'【第(\d+)章', line)
+        if match and int(match.group(1)) >= max_chapter_id:
+            continue
+        valid_lines.append(line)
+    return '\n'.join(valid_lines)
+
+def _filter_future_list(log_list: list, max_chapter_id: int) -> list:
+    """辅助：滤除大于等于 max_chapter_id 的列表形式记录"""
+    valid_lines = []
+    for line in log_list:
+        match = re.search(r'【第(\d+)章', line)
+        if match and int(match.group(1)) >= max_chapter_id:
+            continue
+        valid_lines.append(line)
+    return valid_lines
 
 def build_global_knowledge(book_name: str) -> str:
     """公共基座 1：全书基础知识库 (世界观、简介、核心设定)"""
@@ -68,8 +91,9 @@ def build_micro_details(book_name: str, current_chapter_id: int, history_limit: 
     return "\n".join(lines)
 
 
-def build_full_lifecycle_entities(book_name: str, char_names: list = None, faction_names: list = None) -> str:
-    """公共基座 4：出场实体的全生命周期完整档案 (代码保持原样，按需过滤即可)"""
+def build_full_lifecycle_entities(book_name: str, char_names: list = None, faction_names: list = None,
+                                  max_chapter_id: int = None) -> str:
+    """公共基座 4：出场实体的全生命周期完整档案 (已支持时光倒流，自动剥离未来剧透)"""
     all_chars = dao.list_characters(book_name)
     all_factions = dao.list_factions(book_name)
 
@@ -80,17 +104,49 @@ def build_full_lifecycle_entities(book_name: str, char_names: list = None, facti
     if involved_chars:
         lines.append("【出场角色完整编年史】:")
         for c in involved_chars:
+            # 时光倒流：如果这章之前他还没出场，直接隐身，不给AI投喂
+            first_appear = None
+            if c.get('arc_history'):
+                first_appear = c['arc_history'][0].get('chapter_id')
+            if max_chapter_id and first_appear and first_appear >= max_chapter_id:
+                continue
+
             lines.append(f"  ▶ 角色:【{c['character_name']}】(重要度: {c.get('importance_level', 1)})")
             lines.append(f"    - 基础画像: {c.get('profile', '暂无')}")
-            if c.get('change_log'):
-                lines.append(f"    - 历史演变:\n      {c['change_log'].replace(chr(10), chr(10) + '      ')}")
+
+            change_log = c.get('change_log', '')
+            if max_chapter_id:
+                change_log = _filter_future_logs(change_log, max_chapter_id)
+
+            if change_log:
+                lines.append(f"    - 历史演变:\n      {change_log.replace(chr(10), chr(10) + '      ')}")
+
+            rels = c.get('relationships', [])
+            if rels:
+                rel_lines = []
+                for r in rels:
+                    target = r.get('target')
+                    history = r.get('history', [])
+                    if max_chapter_id:
+                        history = _filter_future_list(history, max_chapter_id)
+                    if history:
+                        rel_lines.append(f"{target}: {history[-1]}")
+                if rel_lines:
+                    lines.append(f"    - 核心关系:\n      " + "\n      ".join(rel_lines))
 
     if involved_factions:
         lines.append("【出场势力完整编年史】:")
         for f in involved_factions:
+            history_log = f.get('history_log', [])
+            if max_chapter_id:
+                history_log = _filter_future_list(history_log, max_chapter_id)
+
+            if max_chapter_id and not history_log and f.get('history_log'):
+                continue  # 时光倒流：此时势力尚未暴露
+
             lines.append(f"  ▶ 势力:【{f['name']}】")
             lines.append(f"    - 宗旨底色: {f.get('description', '暂无')}")
-            if f.get('history_log'):
-                lines.append(f"    - 势力动态:\n      " + "\n      ".join(f['history_log']))
+            if history_log:
+                lines.append(f"    - 势力动态:\n      " + "\n      ".join(history_log))
 
     return "\n".join(lines) if lines else "未提供或未检索到相关实体档案。"

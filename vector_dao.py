@@ -1,106 +1,94 @@
-import shutil
-
-import chromadb
+# vector_dao.py
 import os
-import uuid
+import chromadb
 import hashlib
-
+from chromadb.utils import embedding_functions
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1" # 顺便消灭一个烦人的警告
 
 class VectorDAO:
     def __init__(self):
-        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'vector_db')
-        os.makedirs(db_path, exist_ok=True)
-        self.client = chromadb.PersistentClient(path=db_path)
+        # 数据库持久化路径
+        self.persist_directory = os.path.join(os.path.dirname(__file__), 'data', 'vector_db')
+        os.makedirs(self.persist_directory, exist_ok=True)
 
-    def save_snippet_tags(self, book_name: str, chapter_id: int, snippet_content: str, tags: list):
-        # 核心修复：把可能包含中文的书名，转换成 ChromaDB 绝对支持的纯英文数字组合
-        safe_book_name = hashlib.md5(book_name.encode('utf-8')).hexdigest()
-        collection_name = f"book_{safe_book_name}"
+        self.client = chromadb.PersistentClient(path=self.persist_directory)
 
-        # 使用安全的名称创建或获取集合
-        collection = self.client.get_or_create_collection(name=collection_name)
+        # 【核心优化 1：替换中文 Embedding 模型】
+        # 使用 BAAI 的 bge-small-zh-v1.5，这是目前极其优秀的开源中文向量模型
+        # 第一次运行会自动下载（约100MB），之后都在本地极速运行
+        self.ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="BAAI/bge-small-zh-v1.5"
+        )
 
-        docs = []
-        metadatas = []
-        ids = []
+    def _get_collection(self, book_name: str):
+        safe_name = hashlib.md5(book_name.encode('utf-8')).hexdigest()
+        collection_name = f"book_{safe_name}"
 
-        for tag in tags:
-            docs.append(tag)
-            metadatas.append({
+        return self.client.get_or_create_collection(
+            name=collection_name,
+            embedding_function=self.ef,
+            metadata={"hnsw:space": "cosine"}  # 使用余弦相似度，对长文本更友好
+        )
+
+    def save_snippet_tags(self, book_name: str, chapter_id: int, content: str, tags: list):
+        """存储高光片段与标签"""
+        collection = self._get_collection(book_name)
+
+        # 【核心优化 2：复合文档构建】
+        # 将标签和正文拼接成极其丰富的语境，让模型深刻理解这个片段的“核心要素”
+        tags_str = "，".join(tags)
+        rich_document = f"【核心要素标签】：{tags_str}\n【详细剧情内容】：{content}"
+
+        doc_id = f"chap_{chapter_id}_{hash(content)}"
+
+        collection.add(
+            documents=[rich_document],  # 存入复合文档用于强大的语义检索
+            metadatas=[{
                 "chapter_id": chapter_id,
-                "content": snippet_content
-            })
-            ids.append(str(uuid.uuid4()))
+                "tags_str": tags_str,  # 将标签存入元数据，留给精准查询备用
+                "raw_content": content  # 原始干净的文本
+            }],
+            ids=[doc_id]
+        )
+        print(f"[VectorDB] 已存入第 {chapter_id} 章高光片段，标签：{tags_str}")
 
-        if docs:
-            collection.add(documents=docs, metadatas=metadatas, ids=ids)
+    def query_snippets(self, book_name: str, query_text: str, n_results: int = 5):
+        """语义检索片段"""
+        collection = self._get_collection(book_name)
+
+        # 防止空库报错
+        if collection.count() == 0:
+            return []
+
+        # 限制返回数量不超过库中总数
+        fetch_count = min(n_results, collection.count())
+
+        results = collection.query(
+            query_texts=[query_text],
+            n_results=fetch_count
+        )
+
+        # 解析结果，返回纯净的原始文本
+        snippets = []
+        if results['metadatas'] and len(results['metadatas'][0]) > 0:
+            for meta in results['metadatas'][0]:
+                if meta and 'raw_content' in meta:
+                    snippets.append({
+                        "chapter_id": meta.get('chapter_id'),
+                        "content": meta.get('raw_content'),
+                        "tags_str": meta.get('tags_str')
+                    })
+        return snippets
 
     def delete_snippets_by_chapter(self, book_name: str, chapter_id: int):
-        """核心新增：根据章节ID，精确删除 ChromaDB 中的旧片段，防止数据冗余"""
-        safe_book_name = hashlib.md5(book_name.encode('utf-8')).hexdigest()
-        collection_name = f"book_{safe_book_name}"
-        try:
-            collection = self.client.get_collection(name=collection_name)
-            # 利用 ChromaDB 的 metadata 过滤功能进行精准删除
-            collection.delete(where={"chapter_id": chapter_id})
-            print(f"已清理向量库中《{book_name}》第 {chapter_id} 章的历史碎片。")
-        except Exception:
-            # 如果集合还没创建过，直接忽略即可
-            pass
+        """时光倒流：清理某章的所有向量数据"""
+        collection = self._get_collection(book_name)
+        # ChromaDB 支持直接通过 Metadata 的条件进行删除
+        collection.delete(
+            where={"chapter_id": chapter_id}
+        )
 
-    def delete_collection(self, book_name: str):
-        """核心新增：删除书籍时，彻底销毁 ChromaDB 中的对应集合"""
-        safe_book_name = hashlib.md5(book_name.encode('utf-8')).hexdigest()
-        collection_name = f"book_{safe_book_name}"
-        try:
-            # 只需要这一句！
-            self.client.delete_collection(name=collection_name)
-            print(f"已彻底删除向量库中《{book_name}》的全部数据。")
-        except Exception as e:
-            print(f"删除向量集合时忽略报错: {e}")
-            pass
 
-    def query_snippets(self, book_name: str, queries: list, n_results: int = 3) -> list:
-        """
-        核心新增：根据大模型生成的多个查询短句，去 ChromaDB 检索对应的历史高光片段
-        """
-        if not queries:
-            return []
-
-        safe_book_name = hashlib.md5(book_name.encode('utf-8')).hexdigest()
-        collection_name = f"book_{safe_book_name}"
-
-        try:
-            collection = self.client.get_collection(name=collection_name)
-            # 进行多 Query 批量检索
-            results = collection.query(
-                query_texts=queries,
-                n_results=n_results
-            )
-
-            # 整理返回结果格式，方便前端做手风琴折叠面板
-            # results 结构大概是: {'documents': [[doc1, doc2], [doc3]], 'metadatas': [[m1, m2], [m3]]}
-            formatted_results = []
-            for i, query in enumerate(queries):
-                snippets = []
-                docs = results.get('documents', [])[i] if results.get('documents') else []
-                metas = results.get('metadatas', [])[i] if results.get('metadatas') else []
-
-                for j, doc in enumerate(docs):
-                    meta = metas[j] if j < len(metas) else {}
-                    snippets.append({
-                        "content": doc,  # 这里的 doc 其实是当初存进去的 tags 的文本形式
-                        "original_text": meta.get('content', '原文丢失'),  # 我们需要把元数据里的原文拿出来
-                        "chapter_id": meta.get('chapter_id', '未知')
-                    })
-
-                formatted_results.append({
-                    "query": query,
-                    "snippets": snippets
-                })
-            return formatted_results
-        except Exception as e:
-            print(f"向量检索失败: {e}")
-            return []
-
+# 单例模式导出
 vector_dao = VectorDAO()

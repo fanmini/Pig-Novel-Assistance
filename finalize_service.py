@@ -119,16 +119,27 @@ def task_vector_engine(book_name: str, chapter_id: int, content: str, global_kno
     raw_content = response.choices[0].message.content
     ai_json = clean_json_string(raw_content)
 
+    all_new_tags = []  # 收集本章产生的所有标签
     for item in ai_json.get('snippets', []):
         if item.get('content') and item.get('tags'):
             vector_dao.save_snippet_tags(book_name, chapter_id, item['content'], item['tags'])
+            all_new_tags.extend(item['tags'])
+
+    # 【新增】：将标签名称持久化到 JSON 文件中，供前端查看
+    if all_new_tags:
+        dao.add_vector_tags(book_name, chapter_id, all_new_tags)
 
     return {"prompt": prompt, "response": raw_content}
-
 
 # =====================================================================
 # 落盘处理中心 (纯手工故事线模式，移除复杂的自动状态机)
 # =====================================================================
+
+def _get_cid(s):
+    """提取字符串里的章节数字用于时间线排序"""
+    import re
+    m = re.search(r'【第(\d+)章', s)
+    return int(m.group(1)) if m else 0
 
 def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, entity_json: dict,
                               known_involved_chars: list, active_main_id: str, active_sub_id: str):
@@ -206,10 +217,12 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
                 if target:
                     if 'arc_history' not in target: target['arc_history'] = []
                     new_arc_detail = f"【第{chapter_id}章】：{arc['arc_detail']}"
-                    target['arc_history'].append({"chapter_id": chapter_id, "arc_summary": arc.get('arc_summary', ''),
-                                                  "arc_detail": new_arc_detail})
-                    old_log = target.get('change_log', '')
-                    target['change_log'] = f"{old_log}\n{new_arc_detail}".strip() if old_log else new_arc_detail
+                    target['arc_history'].append(
+                        {"chapter_id": chapter_id, "arc_summary": arc.get('arc_summary', ''),
+                         "arc_detail": new_arc_detail})
+                    # 【时光倒流防乱序修复】：强制按章节号重排，防止修改老章节时跑到最后面
+                    target['arc_history'].sort(key=lambda x: x['chapter_id'])
+                    target['change_log'] = "\n".join([x['arc_detail'] for x in target['arc_history']])
                     is_char_changed = True
 
         for rel in entity_json.get('relationship_changes', []):
@@ -222,12 +235,27 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
                         t_rel = {"target": rel['target'], "history": []}
                         subj['relationships'].append(t_rel)
                     t_rel['history'].append(f"【第{chapter_id}章】：{rel['relation_detail']}")
+                    # 【时光倒流防乱序修复】
+                    t_rel['history'].sort(key=_get_cid)
                     is_char_changed = True
+
+        # 【漏缺补齐修复】：处理已有势力的动态更新
+        for fac_change in entity_json.get('faction_changes', []):
+            fname = fac_change.get('faction_name')
+            if fname:
+                target_fac = next((f for f in current_factions if f['name'] == fname), None)
+                if target_fac:
+                    if 'history_log' not in target_fac: target_fac['history_log'] = []
+                    detail = f"【第{chapter_id}章】：{fac_change.get('change_detail', '')}"
+                    target_fac['history_log'].append(detail)
+                    target_fac['history_log'].sort(key=_get_cid)
+                    is_faction_changed = True
 
         for nc in discoveries.get('new_characters', []):
             if nc.get('name') and not next((c for c in current_chars if c['character_name'] == nc['name']), None):
                 init_rels = [
-                    {"target": r.get('target'), "history": [f"【第{chapter_id}章初见】：{r.get('relation_detail')}"]} for r
+                    {"target": r.get('target'), "history": [f"【第{chapter_id}章初见】：{r.get('relation_detail')}"]}
+                    for r
                     in nc.get('initial_relationships', []) if r.get('target') and r.get('relation_detail')]
                 init_arc = []
                 change_log_text = f"第{chapter_id}章首次登场"
@@ -244,8 +272,9 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
         for nf in discoveries.get('new_factions', []):
             if nf.get('name') and not next((f for f in current_factions if f['name'] == nf['name']), None):
                 current_factions.append(
-                    {"name": nf['name'], "description": nf.get('description', ''), "key_figures": [], "history_log": [
-                        f"【第{chapter_id}章首次显露】：{nf.get('initial_status', nf.get('description', ''))}"]})
+                    {"name": nf['name'], "description": nf.get('description', ''), "key_figures": [],
+                     "history_log": [
+                         f"【第{chapter_id}章首次显露】：{nf.get('initial_status', nf.get('description', ''))}"]})
                 is_faction_changed = True
 
         if is_char_changed:
@@ -253,14 +282,12 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
         if is_faction_changed:
             dao._save_json(os.path.join(dao.data_root, book_name, "factions.json"), current_factions)
 
-
 def cleanup_chapter_data(book_name: str, chapter_id: int):
     dao.delete_chapter_analysis(book_name, chapter_id)
     vector_dao.delete_snippets_by_chapter(book_name, chapter_id)
     dao.clean_foreshadows_by_chapter(book_name, chapter_id)
     dao.clean_entities_by_chapter(book_name, chapter_id)
-    # 彻底移除了 dao.clean_storylines_by_chapter，时光不再自动倒流
-
+    dao.clean_vector_tags_by_chapter(book_name, chapter_id)
 
 # =====================================================================
 # 主流程串联
@@ -278,6 +305,12 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
 
     def worker():
         try:
+            # 【核心修复：时光倒流记忆术】
+            # 在执行 cleanup 清理历史数据之前，先把这章以前绑定的“历史故事线节点”查出来
+            existing_analysis = dao.get_chapter_analysis(book_name, chapter_id)
+            existing_main_id = existing_analysis.get("bound_main_node_id") if existing_analysis else ""
+            existing_sub_id = existing_analysis.get("bound_sub_node_id") if existing_analysis else ""
+
             log_step("系统清理", "processing", "🧹 正在清理当前章节的历史残留数据...")
             cleanup_chapter_data(book_name, chapter_id)
             log_step("系统清理", "success", "🧹 残留数据清理完成。")
@@ -287,23 +320,38 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
             # 1. 获取全局基础
             global_knowledge = build_global_knowledge(book_name)
 
-            # 2. 定位当前活跃的故事线节点
+            # 2. 定位当前活跃的故事线节点 (新增了回溯判定)
             storylines = dao.list_storylines(book_name)
             active_main_id, active_sub_id = "", ""
             current_main_name, current_sub_name = "未绑定大节点", "未绑定小节点"
 
-            for p in storylines:
-                if not p.get('is_completed'):
-                    active_main_id = p['id']
-                    current_main_name = p['name']
-                    for c in p.get('children', []):
-                        if not c.get('is_completed'):
-                            active_sub_id = c['id']
-                            current_sub_name = c['name']
-                            break
-                    break
+            if existing_main_id:
+                # 【情况A：重新定稿】这章以前定稿过！锁定它曾经的历史节点，屏蔽后面的剧透
+                active_main_id = existing_main_id
+                active_sub_id = existing_sub_id
+                for p in storylines:
+                    if p['id'] == active_main_id:
+                        current_main_name = p['name']
+                        for c in p.get('children', []):
+                            if c['id'] == active_sub_id:
+                                current_sub_name = c['name']
+                                break
+                        break
+            else:
+                # 【情况B：第一次定稿】以前没绑定过，自动抓取全书当前最新的未完结节点
+                for p in storylines:
+                    if not p.get('is_completed'):
+                        active_main_id = p['id']
+                        current_main_name = p['name']
+                        for c in p.get('children', []):
+                            if not c.get('is_completed'):
+                                active_sub_id = c['id']
+                                current_sub_name = c['name']
+                                break
+                        break
 
-            # 3. 获取宏观金字塔大纲与微观近期细节 (自带伏笔内容)
+            # 3. 获取宏观金字塔大纲与微观近期细节
+            # 此时传入的 active_main_id 已经是准确锁定的节点了，如果是老章节，AI就绝对看不见后面的大纲了！
             macro_storyline = build_macro_storyline(book_name, active_main_id)
             micro_details = build_micro_details(book_name, chapter_id)
 
@@ -314,8 +362,8 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
             char_names = [c['character_name'] for c in involved_chars_data]
             faction_names = [f['name'] for f in all_factions if f['name'] in content]
 
-            entities_text = build_full_lifecycle_entities(book_name, char_names, faction_names)
-
+            entities_text = build_full_lifecycle_entities(book_name, char_names, faction_names,
+                                                          max_chapter_id=chapter_id)
             log_step("第一轨 (剧情)", "processing", "⏳ 剧情推演引擎正在运算中...")
             plot_future = executor.submit(
                 task_plot_engine, chapter_id, content, global_knowledge, macro_storyline,
@@ -349,8 +397,8 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
             all_factions_new = dao.list_factions(book_name)
             char_names_new = [c['character_name'] for c in all_chars_new if c['character_name'] in content]
             faction_names_new = [f['name'] for f in all_factions_new if f['name'] in content]
-            updated_entities_text = build_full_lifecycle_entities(book_name, char_names_new, faction_names_new)
-
+            updated_entities_text = build_full_lifecycle_entities(book_name, char_names_new, faction_names_new,
+                                                                  max_chapter_id=chapter_id + 1)
             vector_result = task_vector_engine(
                 book_name, chapter_id, content, global_knowledge, macro_storyline,
                 micro_details, updated_entities_text, current_main_name, current_sub_name, ai_config
