@@ -315,6 +315,40 @@
           isQuerying: false
       });
 
+      const slBindModal = reactive({ visible: false, chapterId: null, selected: '' });
+
+      function openStorylineBindModal(chapterId) {
+          slBindModal.chapterId = chapterId;
+          const analysis = getAnalysis(chapterId);
+          if (analysis && analysis.bound_main_node_id && analysis.bound_sub_node_id) {
+              slBindModal.selected = analysis.bound_main_node_id + '|' + analysis.bound_sub_node_id;
+          } else {
+              slBindModal.selected = '';
+          }
+          slBindModal.visible = true;
+          // 确保已经加载了故事线节点
+          if (!storylineNodes.value.length) loadStorylines();
+      }
+
+      async function saveStorylineBind() {
+          const parts = slBindModal.selected.split('|');
+          const mainId = parts[0] || '';
+          const subId = parts[1] || '';
+
+          try {
+              await apiFetch(`${API_BASE}/books/${currentBook.value}/chapter_analyses/${slBindModal.chapterId}`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ bound_main_node_id: mainId, bound_sub_node_id: subId })
+              });
+              await loadAnalysisData(); // 刷新分析列表
+              slBindModal.visible = false;
+              showToast('绑定成功', 'success');
+          } catch (e) {
+              showToast('绑定失败: ' + e.message, 'error');
+          }
+      }
+
       function viewDebug(info) {
           selectedDebug.value = info;
           showDebugModal.value = true;
@@ -1097,6 +1131,9 @@
         showDebugModal,
         selectedDebug,
 
+        // 新增的绑定故事线相关变量和方法
+        slBindModal, openStorylineBindModal, saveStorylineBind,
+
         // 章节生成
         genModal, openGenModal, addTagInput, removeTagInput, queryGenVectors, toggleSnippetExclude, confirmGenerateChapter,viewDebug,
 
@@ -1235,16 +1272,15 @@
                   <div class="analysis-field-row"><span class="field-label-text">摘要</span><div class="field-content"><span>[[ getAnalysis(ch.id).summary || '暂无' ]]</span><span class="edit-pencil" @click.stop="openEditModal(ch.id, 'summary', getAnalysis(ch.id).summary)">✎</span></div></div>
                   <div class="analysis-field-row"><span class="field-label-text">角色</span><div class="field-content"><span>[[ getAnalysis(ch.id).involved_characters?.join('、') || '暂无' ]]</span><span class="edit-pencil" @click.stop="openRoleModal(ch.id)">✎</span></div></div>
                   <div class="analysis-field-row">
-                      <span class="field-label-text">故事进度</span>
-                      <div class="field-content" style="flex-direction: column;">
-                          <span v-if="getNodeNamesForChapter(ch.id)" style="font-size:11px; background:#e0f2fe; color:#0284c7; padding:2px 8px; border-radius:12px; margin-bottom:4px; display:inline-block; width:fit-content; border: 1px solid #bae6fd;">
-                              📍 [[ getNodeNamesForChapter(ch.id) ]]
-                          </span>
-                          <div style="display:flex; justify-content:space-between; width:100%;">
-                              <span>[[ getAnalysis(ch.id).story_position || '暂无' ]]</span>
-                              <span class="edit-pencil" @click.stop="openEditModal(ch.id, 'story_position', getAnalysis(ch.id).story_position)">✎</span>
-                          </div>
-                      </div>
+                        <span class="field-label-text">故事进度</span>
+                        <div class="field-content" style="flex-direction: column;">
+                            <span v-if="getNodeNamesForChapter(ch.id)" @click.stop="openStorylineBindModal(ch.id)" style="font-size:11px; background:#e0f2fe; color:#0284c7; padding:2px 8px; border-radius:12px; margin-bottom:4px; display:inline-block; width:fit-content; border: 1px solid #bae6fd; cursor: pointer;">
+                                📍 [[ getNodeNamesForChapter(ch.id) ]] ✎
+                            </span>
+                            <span v-else @click.stop="openStorylineBindModal(ch.id)" style="font-size:11px; background:#f1f5f9; color:#64748b; padding:2px 8px; border-radius:12px; margin-bottom:4px; display:inline-block; width:fit-content; border: 1px dashed #cbd5e1; cursor: pointer;">
+                                📍 点击绑定故事线
+                            </span>
+                        </div>
                   </div>
                   <div class="analysis-field-row"><span class="field-label-text">情感强度</span><div class="field-content"><span>[[ getAnalysis(ch.id).emotion_intensity || 1 ]] / 10</span><span class="edit-pencil" @click.stop="openEditModal(ch.id, 'emotion_intensity', getAnalysis(ch.id).emotion_intensity)">✎</span></div></div>
                   <div class="analysis-field-row"><span class="field-label-text">事实</span><div class="field-content" style="display:block"><div v-if="getAnalysis(ch.id).key_events?.length"><div v-for="(ev,idx) in getAnalysis(ch.id).key_events" class="event-item"><span class="event-index">[[ idx+1 ]].</span><span class="event-text">[[ ev ]]</span><span class="edit-pencil" @click.stop="openEditModal(ch.id, 'key_events', getAnalysis(ch.id).key_events)">✎</span></div></div><div v-else style="color:#94a3b8;">暂无事实</div><button class="add-event-btn" @click.stop="addKeyEvent(ch.id)">+ 添加事实</button></div></div>
@@ -1612,6 +1648,27 @@
             <div class="modal-actions">
               <button class="modal-btn secondary" @click="modal.visible = false">取消</button>
               <button class="modal-btn primary" @click="saveAnalysisField">保存</button>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="slBindModal.visible" class="modal-overlay" @click.self="slBindModal.visible = false">
+          <div class="modal" style="min-width: 400px;">
+            <h3>📍 绑定/修改所属故事线</h3>
+            <div style="margin-bottom: 20px;">
+                <label style="font-size: 13px; color: #64748b; margin-bottom: 8px; display: block;">选择本章要绑定的进度节点：</label>
+                <select v-model="slBindModal.selected" style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #cbd5e1;">
+                    <option value="">(解绑) 不绑定任何节点</option>
+                    <optgroup v-for="p in storylineNodes" :key="p.id" :label="p.name">
+                        <option v-for="c in p.children" :key="c.id" :value="p.id + '|' + c.id">
+                            [[ c.name ]]
+                        </option>
+                    </optgroup>
+                </select>
+            </div>
+            <div class="modal-actions">
+              <button class="modal-btn secondary" @click="slBindModal.visible = false">取消</button>
+              <button class="modal-btn primary" @click="saveStorylineBind">确认绑定</button>
             </div>
           </div>
         </div>

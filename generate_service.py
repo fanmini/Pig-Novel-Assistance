@@ -1,10 +1,7 @@
 # generate_service.py
 import json
 import re
-from context_builder import (
-    build_global_knowledge, get_prev_summary,
-    get_micro_details_with_fallback, build_full_lifecycle_entities, dao
-)
+from context_builder import *
 from vector_dao import vector_dao
 from ai_handler import ai_handler, load_ai_config
 from prompts.chapter_generation import PROMPT_PLAN_AND_QUERY, PROMPT_GENERATE_CONTENT
@@ -25,20 +22,26 @@ def generate_chapter_plan(book_name: str, chapter_id: int, user_draft: str) -> d
 
     # 1. 抓取上下文
     global_knowledge = build_global_knowledge(book_name)
-
-    # 寻找当前活跃的故事线大节点
     storylines = dao.list_storylines(book_name)
-    active_main_id = ""
-    for p in storylines:
-        if not p.get('is_completed'):
-            active_main_id = p['id']
-            break
+    active_main_id = next((p['id'] for p in storylines if not p.get('is_completed')), "")
 
-    micro_details = get_micro_details_with_fallback(book_name, chapter_id, active_main_id, detail_level='lite')
+    macro_storyline = build_macro_storyline(book_name, active_main_id)
+    micro_details = build_micro_details(book_name, chapter_id)  # 自动查出最近10章详情和伏笔内容
 
-    # 2. 组装 Prompt
+    # 嗅探逻辑：只要知识库里的角色/势力名在草稿里出现了，就把它的生命周期档案拉出来
+    all_chars = dao.list_characters(book_name)
+    all_factions = dao.list_factions(book_name)
+    involved_chars = [c['character_name'] for c in all_chars if c['character_name'] in user_draft]
+    involved_factions = [f['name'] for f in all_factions if f['name'] in user_draft]
+
+    entities_context = build_full_lifecycle_entities(book_name, char_names=involved_chars,
+                                                     faction_names=involved_factions)
+
+    # 2. 组装 Prompt (将新增的变量填入格式化字符串)
     prompt = PROMPT_PLAN_AND_QUERY.format(
         global_knowledge=global_knowledge,
+        entities_context=entities_context,
+        macro_storyline=macro_storyline,
         micro_details=micro_details,
         user_draft=user_draft
     )
@@ -76,7 +79,6 @@ def generate_chapter_content_stream(book_name: str, chapter_id: int, content_pla
     ai_config = load_ai_config()
 
     global_knowledge = build_global_knowledge(book_name)
-    prev_summary = get_prev_summary(book_name, chapter_id)
 
     # 【核心：Context Control】只投喂前端用户打勾选中的角色和势力！
     entities_context = build_full_lifecycle_entities(book_name, char_names=selected_chars)
@@ -94,7 +96,6 @@ def generate_chapter_content_stream(book_name: str, chapter_id: int, content_pla
 
     prompt = PROMPT_GENERATE_CONTENT.format(
         global_knowledge=global_knowledge,
-        prev_summary=prev_summary,
         entities_context=entities_context,
         retrieved_snippets=snippets_text,
         content_plan=content_plan

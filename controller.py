@@ -219,16 +219,20 @@ def delete_memory_pack(book_name, title):
 def list_chapter_analyses(book_name):
     return jsonify(dao.list_chapter_analyses(book_name))
 
+
 @api_bp.route('/books/<book_name>/chapter_analyses/<int:chapter_id>', methods=['PUT'])
 def update_chapter_analysis(book_name, chapter_id):
     data = request.json
+    existing = dao.get_chapter_analysis(book_name, chapter_id) or {}
+
     success = dao.add_or_update_chapter_analysis(
         book_name, chapter_id,
-        summary=data.get('summary', ''),
-        key_events=data.get('key_events', []),
-        story_position=data.get('story_position', ''),
-        emotion_intensity=data.get('emotion_intensity', 1),
-        involved_characters=data.get('involved_characters', [])
+        summary=data.get('summary', existing.get('summary', '')),
+        key_events=data.get('key_events', existing.get('key_events', [])),
+        emotion_intensity=data.get('emotion_intensity', existing.get('emotion_intensity', 1)),
+        involved_characters=data.get('involved_characters', existing.get('involved_characters', [])),
+        bound_main_node_id=data.get('bound_main_node_id', existing.get('bound_main_node_id', '')),
+        bound_sub_node_id=data.get('bound_sub_node_id', existing.get('bound_sub_node_id', ''))
     )
     if success:
         return jsonify({'message': '更新成功'})

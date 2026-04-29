@@ -160,14 +160,15 @@ class NovelModel:
 
     def add_or_update_chapter_analysis(self, book_name: str, chapter_id: int,
                                        summary: str = "", key_events: List[str] = None,
-                                       story_position: str = "", emotion_intensity: int = 1,
+                                       emotion_intensity: int = 1,
                                        involved_characters: List[str] = None,
                                        bound_main_node_id: str = "", bound_sub_node_id: str = "") -> bool:
+        # (删除了 story_position)
         analyses = self.list_chapter_analyses(book_name)
         existing = next((an for an in analyses if an.get("chapter_id") == chapter_id), None)
         data = {
             "chapter_id": chapter_id, "summary": summary, "key_events": key_events or [],
-            "story_position": story_position, "emotion_intensity": max(1, min(10, emotion_intensity)),
+            "emotion_intensity": max(1, min(10, emotion_intensity)),
             "involved_characters": involved_characters or [],
             "bound_main_node_id": bound_main_node_id, "bound_sub_node_id": bound_sub_node_id
         }
@@ -356,49 +357,7 @@ class NovelModel:
 
         return char_changed or fac_changed
 
-    def clean_storylines_by_chapter(self, book_name: str, chapter_id: int) -> bool:
-        """【新增】撤销指定章节对故事线造成的改变（时光倒流机制）"""
-        storylines = self.list_storylines(book_name)
-        is_changed = False
 
-        # 逆序遍历，方便在遍历时安全删除元素
-        for i in range(len(storylines) - 1, -1, -1):
-            main_node = storylines[i]
-
-            # 1. 如果这个大节点是本章新建的，连根拔起直接删掉
-            if main_node.get("created_by_chapter") == chapter_id:
-                del storylines[i]
-                is_changed = True
-                continue
-
-            # 2. 如果这个大节点是本章宣告完结的，撤销它的完结状态！
-            if main_node.get("completed_by_chapter") == chapter_id:
-                main_node["is_completed"] = False
-                main_node["completed_by_chapter"] = None
-                is_changed = True
-
-            # 3. 处理大节点里面的小节点（子节点）
-            if "children" in main_node:
-                children = main_node["children"]
-                for j in range(len(children) - 1, -1, -1):
-                    sub_node = children[j]
-
-                    # 如果小节点是本章新建的，删掉
-                    if sub_node.get("created_by_chapter") == chapter_id:
-                        del children[j]
-                        is_changed = True
-                        continue
-
-                    # 如果小节点是本章完结的，撤销完结状态
-                    if sub_node.get("completed_by_chapter") == chapter_id:
-                        sub_node["is_completed"] = False
-                        sub_node["completed_by_chapter"] = None
-                        is_changed = True
-
-        if is_changed:
-            self.update_storylines(book_name, storylines)
-
-        return is_changed
 
     def clean_foreshadows_by_chapter(self, book_name: str, chapter_id: int) -> bool:
         """【新增】清理指定章节产生的伏笔数据（重定稿时使用）"""

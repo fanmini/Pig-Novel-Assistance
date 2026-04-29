@@ -3,49 +3,73 @@ from base_dao import NovelModel
 
 dao = NovelModel()
 
+
 def build_global_knowledge(book_name: str) -> str:
-    """公共基座1：全书基础知识库 (世界观、简介、条目)"""
+    """公共基座 1：全书基础知识库 (世界观、简介、核心设定)"""
     book = dao.get_book(book_name) or {}
     lines = [f"【书籍简介】: {book.get('description', '暂无简介')}"]
     for meta in book.get('meta_list', []):
-        lines.append(f"【{meta.get('key', '未知条目')}】: {meta.get('value', '')}")
+        lines.append(f"【{meta.get('key', '未知设定')}】: {meta.get('value', '')}")
     return "\n".join(lines)
 
-def build_macro_storyline_with_span(storylines: list, analyses: list, active_main_id: str) -> str:
-    """公共基座2：宏观大纲，带章节跨度"""
-    main_spans = {}
-    for an in analyses:
-        mid = an.get('bound_main_node_id')
-        if mid:
-            main_spans.setdefault(mid, []).append(an.get('chapter_id'))
 
+def build_macro_storyline(book_name: str, active_main_id: str) -> str:
+    """公共基座 2：宏观金字塔大纲 (从头遍历到当前活跃大节点)"""
+    storylines = dao.list_storylines(book_name)
     lines = []
+
     for p in storylines:
-        span = main_spans.get(p['id'], [])
-        span_str = f"(第{min(span)}章 - 第{max(span)}章)" if span else "(尚无章节)"
-        lines.append(f"【卷/大节点: {p.get('name')}】 {span_str} - 核心起因: {p.get('content')}")
+        status_str = "✅已完结" if p.get('is_completed') else "🔄进行中"
+        lines.append(f"【大节点：{p.get('name')}】 {status_str}")
+        lines.append(f"  └─ 核心内容: {p.get('content', '暂无描述')}")
+
+        # 只有当到达“当前正在进行的大节点”时，才展开内部的小节点详情
         if p['id'] == active_main_id:
-            break
+            for c in p.get('children', []):
+                c_status = "✅已完结" if c.get('is_completed') else "🔄进行中"
+                lines.append(f"    ▶ 【当前大节点下的子节点：{c.get('name')}】 {c_status}")
+                lines.append(f"      └─ 核心内容: {c.get('content', '暂无描述')}")
+            break  # 不再透传未来的大节点，防止 AI 剧透或混淆
+
     return "\n".join(lines) if lines else "暂无宏观大纲"
 
-def get_prev_summary(book_name: str, current_chapter_id: int) -> str:
-    """公共基座3：上一章摘要"""
-    if current_chapter_id <= 1:
-        return "无（当前为第一章，故事刚开始）"
-    prev_an = dao.get_chapter_analysis(book_name, current_chapter_id - 1)
-    return prev_an.get('summary', '暂无上一章摘要数据') if prev_an else "暂无上一章摘要数据"
 
-def get_micro_details_with_fallback(book_name: str, current_chapter_id: int, active_main_id: str, detail_level: str = 'full') -> str:
-    """公共基座4：微观细节与 10 章保底溯源 (原样保留)"""
-    # ... (这里粘贴你原来 finalize_service.py 里的 get_micro_details_with_fallback 代码) ...
-    pass # 篇幅原因省略，直接剪切过来即可
+def build_micro_details(book_name: str, current_chapter_id: int, history_limit: int = 10) -> str:
+    """
+    公共基座 3：微观细节 (最近 N 章的具体详情)。
+    完美解决痛点：包含了摘要、事件、情绪，以及最重要的——【伏笔的具体内容】。
+    也同时替代了以前废柴的 prev_summary。
+    """
+    analyses = dao.list_chapter_analyses(book_name)
+    foreshadows = dao.list_foreshadows(book_name)
+
+    # 筛选出最近的 N 章分析记录
+    recent_analyses = [an for an in analyses if an.get('chapter_id', 0) < current_chapter_id]
+    recent_analyses = sorted(recent_analyses, key=lambda x: x['chapter_id'])[-history_limit:]
+
+    if not recent_analyses:
+        return "暂无近期章节记录（当前为故事起始阶段）。"
+
+    lines = []
+    for an in recent_analyses:
+        cid = an['chapter_id']
+        lines.append(f"【第 {cid} 章】:")
+        lines.append(f"  - 摘要: {an.get('summary', '')}")
+        lines.append(f"  - 情绪值: {an.get('emotion_intensity', 1)}")
+        if an.get('key_events'):
+            lines.append(f"  - 核心事件: {', '.join(an.get('key_events', []))}")
+
+        # 【关键修复】查出在这一章埋设的所有伏笔的具体内容！
+        planted_fs = [f for f in foreshadows if f.get("planted_chapter") == cid]
+        if planted_fs:
+            fs_details = [f"[{f.get('name')}]: {f.get('content')}" for f in planted_fs]
+            lines.append(f"  - 本章埋设伏笔: {' | '.join(fs_details)}")
+
+    return "\n".join(lines)
+
 
 def build_full_lifecycle_entities(book_name: str, char_names: list = None, faction_names: list = None) -> str:
-    """
-    公共基座5：出场实体的全生命周期完整档案。
-    【优化说明】：增加了参数过滤。如果是定稿，传嗅探到的名字；
-    如果是章节生成，传用户在面板【打勾】选中的名字。如果不传，则返回空或全量。
-    """
+    """公共基座 4：出场实体的全生命周期完整档案 (代码保持原样，按需过滤即可)"""
     all_chars = dao.list_characters(book_name)
     all_factions = dao.list_factions(book_name)
 
@@ -58,13 +82,15 @@ def build_full_lifecycle_entities(book_name: str, char_names: list = None, facti
         for c in involved_chars:
             lines.append(f"  ▶ 角色:【{c['character_name']}】(重要度: {c.get('importance_level', 1)})")
             lines.append(f"    - 基础画像: {c.get('profile', '暂无')}")
-            # ... (把原来拼装弧光、关系网的代码复制过来) ...
+            if c.get('change_log'):
+                lines.append(f"    - 历史演变:\n      {c['change_log'].replace(chr(10), chr(10) + '      ')}")
 
     if involved_factions:
         lines.append("【出场势力完整编年史】:")
         for f in involved_factions:
             lines.append(f"  ▶ 势力:【{f['name']}】")
             lines.append(f"    - 宗旨底色: {f.get('description', '暂无')}")
-            # ... (把原来拼装势力历史的代码复制过来) ...
+            if f.get('history_log'):
+                lines.append(f"    - 势力动态:\n      " + "\n      ".join(f['history_log']))
 
-    return "\n".join(lines) if lines else "未提供实体档案。"
+    return "\n".join(lines) if lines else "未提供或未检索到相关实体档案。"
