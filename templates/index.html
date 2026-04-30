@@ -296,7 +296,6 @@
   const app = createApp({
     delimiters: ['[[', ']]'],
     setup() {
-
       const genModal = reactive({
           visible: false,
           isGenerating: false, // 是否正在大语言模型打字中
@@ -585,6 +584,102 @@
 
       const roleActiveTab = ref('characters');
 
+      // ================= 向量数据可视化与沙盒 =================
+      const vectorSnippetsList = ref([]);
+      const expandedVectorChapters = ref(new Set());
+      const vectorSearchModal = reactive({
+          visible: false,
+          isSearching: false,
+          query: '',
+          filters: { scene_type: '', plot_trope: '', characters: '', factions: '', items: '', locations: '' },
+          results: []
+      });
+
+      // 监视 Tab 切换，点开向量数据时自动加载
+      watch(kbActiveTab, async (tab) => {
+          if (tab === 'vector' && currentBook.value) {
+              await loadVectorSnippets();
+          }
+      });
+
+      async function loadVectorSnippets() {
+          try {
+              vectorSnippetsList.value = await apiFetch(`${API_BASE}/books/${currentBook.value}/vector_snippets`);
+          } catch (e) {
+              showToast('加载向量数据失败', 'error');
+          }
+      }
+
+      // 按章节分组计算属性
+      const groupedVectorSnippets = computed(() => {
+          const groups = {};
+          vectorSnippetsList.value.forEach(snip => {
+              const ch = snip.chapter_id || '未分类';
+              if (!groups[ch]) groups[ch] = [];
+              groups[ch].push(snip);
+          });
+          const sortedKeys = Object.keys(groups).map(Number).sort((a,b)=>a-b);
+          return sortedKeys.map(k => ({ chapter: k, items: groups[k] }));
+      });
+
+      function toggleVectorExpand(ch) {
+          expandedVectorChapters.value.has(ch) ? expandedVectorChapters.value.delete(ch) : expandedVectorChapters.value.add(ch);
+          expandedVectorChapters.value = new Set(expandedVectorChapters.value);
+      }
+
+      // 过滤掉内部用不到展示的 Metadata 键
+      function filterMetadata(meta) {
+          const res = {};
+          for (let k in meta) {
+              if (k !== 'chapter_id' && k !== 'raw_content' && meta[k] !== '无') {
+                  res[k] = meta[k];
+              }
+          }
+          return res;
+      }
+
+      // 英文 key 转中文显示
+      function formatMetaKey(key) {
+          const map = { scene_type:'片段', plot_trope:'剧情', characters:'角色', factions:'势力', items:'物品', locations:'地理', description_focus:'描写' };
+          return map[key] || key;
+      }
+
+      function openVectorSearchModal() {
+          vectorSearchModal.visible = true;
+      }
+
+      // 【核心】：利用高阶 RAG 管道语法巧妙复用后端接口，不改任何后端代码！
+      async function testVectorSearch() {
+          if (!vectorSearchModal.query.trim()) {
+              return showToast('必须输入语义查询词', 'error');
+          }
+          vectorSearchModal.isSearching = true;
+
+          // 拼接我们的管道魔法字符串
+          let ragTag = `query:${vectorSearchModal.query.trim()}`;
+          for (const [key, val] of Object.entries(vectorSearchModal.filters)) {
+              if (val.trim()) {
+                  ragTag = `${key}:${val.trim()}|${ragTag}`;
+              }
+          }
+          console.log("沙盒测试发送的高阶指令：", ragTag);
+
+          try {
+              const res = await apiFetch(`${API_BASE}/ai/query_vectors`, {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ book_name: currentBook.value, tags: [ragTag] })
+              });
+
+              if (res && res.length > 0) {
+                  vectorSearchModal.results = res[0].snippets;
+                  showToast('检索成功', 'success');
+              }
+          } catch(e) {
+              showToast('检索失败: ' + e.message, 'error');
+          } finally {
+              vectorSearchModal.isSearching = false;
+          }
+      }
 
       // ========== 势力状态与方法 ==========
       const factionsList = ref([]);
@@ -1204,6 +1299,12 @@
         showDebugModal,
         selectedDebug,
 
+        // ================= 新增：向量数据可视化与沙盒 =================
+        vectorSnippetsList, expandedVectorChapters, vectorSearchModal,
+        groupedVectorSnippets, toggleVectorExpand, filterMetadata,
+        formatMetaKey, openVectorSearchModal, testVectorSearch,
+
+
         // 新增的绑定故事线相关变量和方法
         slBindModal, openStorylineBindModal, saveStorylineBind,
 
@@ -1368,6 +1469,7 @@
             <div class="kb-tabs">
               <div class="kb-tab" :class="{ active: kbActiveTab === 'book' }" @click="kbActiveTab = 'book'">书籍知识</div>
               <div class="kb-tab" :class="{ active: kbActiveTab === 'storyline' }" @click="kbActiveTab = 'storyline'">故事线</div>
+              <div class="kb-tab" :class="{ active: kbActiveTab === 'vector' }" @click="kbActiveTab = 'vector'">向量数据</div>
               <div class="kb-tab" :class="{ active: kbActiveTab === 'foreshadow' }" @click="kbActiveTab = 'foreshadow'">伏笔信息</div>
               <div class="kb-tab" :class="{ active: kbActiveTab === 'memory' }" @click="kbActiveTab = 'memory'">记忆包</div>
             </div>
@@ -1418,6 +1520,69 @@
                 </div>
                 <div v-if="!memoryPacksList.length" style="padding:12px;color:#94a3b8;text-align:center;">暂无记忆包</div>
               </template>
+
+              <template v-if="kbActiveTab === 'vector'">
+                  <div style="margin-bottom: 12px; text-align: right;">
+                      <button class="modal-btn primary" style="background:#8b5cf6;" @click="openVectorSearchModal">🔍 唤起高级检索测试台</button>
+                  </div>
+
+                  <div v-for="group in groupedVectorSnippets" :key="group.chapter" class="analysis-chapter-item">
+                      <div class="analysis-chapter-header" @click="toggleVectorExpand(group.chapter)">
+                          <span class="expand-icon">[[ expandedVectorChapters.has(group.chapter) ? '▼' : '▶' ]]</span>
+                          <span style="font-weight: 600;">第 [[ group.chapter ]] 章</span>
+                          <span style="font-size:11px; color:#94a3b8; margin-left:8px;">([[ group.items.length ]] 个片段)</span>
+                      </div>
+                      <div v-if="expandedVectorChapters.has(group.chapter)" style="padding: 4px 8px 8px;">
+                          <div v-for="snip in group.items" :key="snip.id" class="kb-item" style="display:flex; flex-direction:column; align-items:flex-start; cursor:default; background:#fff; border:1px solid #e2e8f0;">
+                              <div style="font-size: 13px; color: #1e293b; margin-bottom: 10px; line-height: 1.6;">[[ snip.content ]]</div>
+                              <div class="role-tags">
+                                  <span v-for="(val, key) in filterMetadata(snip.metadata)" :key="key" class="role-tag" style="background: #f1f5f9; color: #475569; font-size: 11px; padding: 2px 8px; border: 1px solid #cbd5e1;">
+                                      <strong style="color:#3b82f6;">[[ formatMetaKey(key) ]]:</strong> [[ val ]]
+                                  </span>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+                  <div v-if="!vectorSnippetsList.length" style="padding:12px;color:#94a3b8;text-align:center;">暂无向量数据，请定稿生成！</div>
+                </template>
+
+                <!-- 独立的高级检索测试弹窗 -->
+                <div v-if="vectorSearchModal.visible" class="modal-overlay" @click.self="vectorSearchModal.visible = false">
+                  <div class="modal" style="width: 700px; max-width: 95vw;">
+                    <h3 style="display:flex; justify-content:space-between; align-items:center;">
+                        <span>🔍 向量数据库沙盒测试台</span>
+                        <span class="icon-btn" style="background:#f1f5f9; color:#64748b; font-size:14px;" @click="vectorSearchModal.visible = false">✕</span>
+                    </h3>
+
+                    <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+                        <input v-model="vectorSearchModal.query" placeholder="【必填】输入语义查询词 (如: 张三用剑反杀的细节)" style="flex: 1; border-color:#8b5cf6; box-shadow: 0 0 0 2px rgba(139,92,246,0.1);">
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; background: #f8fafc; padding: 16px; border-radius: 12px; border: 1px solid #e2e8f0;">
+                        <div style="grid-column: span 2; font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: -4px;">八大维度漏斗过滤 (选填，精准匹配)</div>
+                        <div><label style="font-size: 11px; color: #64748b;">片段类型 (scene_type)</label><input v-model="vectorSearchModal.filters.scene_type" placeholder="如: 战斗"></div>
+                        <div><label style="font-size: 11px; color: #64748b;">剧情类型 (plot_trope)</label><input v-model="vectorSearchModal.filters.plot_trope" placeholder="如: 绝境反杀"></div>
+                        <div><label style="font-size: 11px; color: #64748b;">涉及角色 (characters)</label><input v-model="vectorSearchModal.filters.characters" placeholder="如: 张三"></div>
+                        <div><label style="font-size: 11px; color: #64748b;">涉及势力 (factions)</label><input v-model="vectorSearchModal.filters.factions" placeholder="如: 黑龙商会"></div>
+                        <div><label style="font-size: 11px; color: #64748b;">涉及物品 (items)</label><input v-model="vectorSearchModal.filters.items" placeholder="如: 破空剑法"></div>
+                        <div><label style="font-size: 11px; color: #64748b;">地理坐标 (locations)</label><input v-model="vectorSearchModal.filters.locations" placeholder="如: 乱葬岗"></div>
+                    </div>
+
+                    <button class="modal-btn primary" @click="testVectorSearch" style="width: 100%; margin-bottom: 20px; background:#8b5cf6; font-size:14px; padding:10px;" :disabled="vectorSearchModal.isSearching">
+                        [[ vectorSearchModal.isSearching ? '检索中...' : '⚡ 执行漏斗混合检索' ]]
+                    </button>
+
+                    <div style="max-height: 250px; overflow-y: auto; border-top: 1px dashed #cbd5e1; padding-top: 16px;">
+                        <div style="font-size:13px; font-weight:600; color:#334155; margin-bottom:10px;">检索召回结果：</div>
+                        <div v-if="vectorSearchModal.results.length === 0" style="text-align:center; color:#94a3b8; font-size:12px; padding:20px;">等待检索或未命中任何数据</div>
+                        <div v-for="(res, idx) in vectorSearchModal.results" :key="idx" class="snippet-card" style="border-left-color:#8b5cf6; background:#f5f3ff; color:#1e293b;">
+                            <span style="font-size:11px; color:#8b5cf6; margin-right:6px; font-weight:bold;">[第[[res.chapter_id]]章]</span>
+                            [[ res.original_text ]]
+                        </div>
+                    </div>
+                  </div>
+              </div>
+
               <template v-if="kbActiveTab === 'storyline'">
                 <div class="timeline">
                     <div v-for="pNode in storylineNodes" :key="pNode.id">

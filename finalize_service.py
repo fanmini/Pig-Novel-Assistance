@@ -96,7 +96,7 @@ def task_entity_engine(chapter_id: int, content: str, global_knowledge: str, mac
 def task_vector_engine(book_name: str, chapter_id: int, content: str, global_knowledge: str,
                        macro_storyline: str, micro_details: str, updated_entities_context: str,
                        current_main_name: str, current_sub_name: str, ai_config: dict):
-    """第三轨：高光与向量引擎"""
+    """第三轨：高光与向量引擎 (已升级为 8 维度结构化打标)"""
     prompt = PROMPT_VECTOR_TAGS.format(
         global_knowledge=global_knowledge,
         macro_storyline=macro_storyline,
@@ -119,15 +119,30 @@ def task_vector_engine(book_name: str, chapter_id: int, content: str, global_kno
     raw_content = response.choices[0].message.content
     ai_json = clean_json_string(raw_content)
 
-    all_new_tags = []  # 收集本章产生的所有标签
-    for item in ai_json.get('snippets', []):
-        if item.get('content') and item.get('tags'):
-            vector_dao.save_snippet_tags(book_name, chapter_id, item['content'], item['tags'])
-            all_new_tags.extend(item['tags'])
+    all_new_tags = []  # 收集本章产生的所有标签汇编，供前端 UI 查看
 
-    # 【新增】：将标签名称持久化到 JSON 文件中，供前端查看
+    for item in ai_json.get('snippets', []):
+        snippet_content = item.get('content')
+        if not snippet_content:
+            continue
+
+        # 1. 剥离正文，剩下的字典内容就是纯粹的 8 维度 Metadata
+        snippet_meta = {k: v for k, v in item.items() if k != 'content'}
+
+        # 2. 调用最新重构的底层方法，存入 ChromaDB
+        vector_dao.save_structured_snippet(book_name, chapter_id, snippet_content, snippet_meta)
+
+        # 3. 兼容前端旧的 tags 显示逻辑：将多维度数组拍扁合并
+        for key, val in snippet_meta.items():
+            if isinstance(val, list):
+                all_new_tags.extend(val)
+            elif isinstance(val, str) and val.strip() and val != "无":
+                all_new_tags.append(val)
+
+    # 【保持不变】：将所有词汇去重后持久化，供前端一览查看
     if all_new_tags:
-        dao.add_vector_tags(book_name, chapter_id, all_new_tags)
+        unique_tags = list(set(all_new_tags))
+        dao.add_vector_tags(book_name, chapter_id, unique_tags)
 
     return {"prompt": prompt, "response": raw_content}
 

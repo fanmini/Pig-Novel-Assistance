@@ -387,6 +387,10 @@ def ai_query_vectors():
     results = query_vector_knowledge(book_name, tags)
     return jsonify(results)
 
+@api_bp.route('/books/<book_name>/vector_snippets', methods=['GET'])
+def get_vector_snippets(book_name):
+    """获取整本书的所有向量片段"""
+    return jsonify(vector_dao.get_all_snippets(book_name))
 
 @api_bp.route('/books/<book_name>/vector_tags', methods=['GET'])
 def get_vector_tags(book_name):

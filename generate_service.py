@@ -77,18 +77,43 @@ def generate_chapter_plan(book_name: str, chapter_id: int, user_draft: str) -> d
 
 
 def query_vector_knowledge(book_name: str, tags: list) -> list:
-    """阶段二：去向量数据库查询片段"""
+    """阶段二：去向量数据库查询片段 (已升级为高阶 Metadata 漏斗过滤)"""
     all_results = []
 
-    # 因为 tags 是一个包含多个检索句子的列表，我们需要逐个去向量库检索
     for tag in tags:
         if not tag.strip():
             continue
 
-        # 每次传单个字符串给底层的 DAO
-        raw_snippets = vector_dao.query_snippets(book_name, tag, n_results=2)
+        where_filter = {}
+        query_text = tag
 
-        # 将底层返回的数据格式，转换为前端渲染和生成正文所需的格式
+        # 【核心逻辑】：解析高阶 RAG 管道语法
+        # 例如: "scene_type:战斗|characters:张三|query:破空剑法细节"
+        if "|" in tag and ":" in tag:
+            parts = tag.split("|")
+            query_text = ""
+            for part in parts:
+                if ":" in part:
+                    k, v = part.split(":", 1)
+                    k, v = k.strip(), v.strip()
+                    if k == "query":
+                        query_text = v
+                    # 若匹配到我们的 8 个固定维度，转入 ChromaDB 的元数据过滤
+                    elif k in ["scene_type", "plot_trope", "characters", "factions", "items", "locations", "description_focus"]:
+                        # 使用 ChromaDB 的 $contains 语法，实现逗号分隔文本的精准包含查询
+                        where_filter[k] = {"$contains": v}
+                else:
+                    query_text += part
+
+        # 防止没有提取到 query 内容导致空查询
+        if not query_text.strip():
+            query_text = tag
+
+        # 传入 query_text 查相似度，传入 where_filter 查确切属性！
+        filter_dict = where_filter if where_filter else None
+        raw_snippets = vector_dao.query_snippets(book_name, query_text, n_results=2, where_filter=filter_dict)
+
+        # 转换为前端渲染所需的格式
         formatted_snippets = []
         for s in raw_snippets:
             formatted_snippets.append({
@@ -96,7 +121,6 @@ def query_vector_knowledge(book_name: str, tags: list) -> list:
                 "original_text": s.get("content")
             })
 
-        # 打包这一条检索词的结果
         all_results.append({
             "query": tag,
             "snippets": formatted_snippets
