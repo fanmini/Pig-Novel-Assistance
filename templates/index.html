@@ -1091,7 +1091,7 @@
       async function sendAiMessage() {
           const msg = aiInput.value.trim();
           if (!msg) return;
-
+          finalizeSteps.value = [];
           if (aiMode.value === 'generate' || aiMode.value === 'continue') {
               aiInput.value = '';
               await triggerGeneratePlan(msg);

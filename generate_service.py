@@ -75,9 +75,34 @@ def generate_chapter_plan(book_name: str, chapter_id: int, user_draft: str) -> d
     }
     return parsed
 
+
 def query_vector_knowledge(book_name: str, tags: list) -> list:
     """阶段二：去向量数据库查询片段"""
-    return vector_dao.query_snippets(book_name, tags, n_results=2)
+    all_results = []
+
+    # 因为 tags 是一个包含多个检索句子的列表，我们需要逐个去向量库检索
+    for tag in tags:
+        if not tag.strip():
+            continue
+
+        # 每次传单个字符串给底层的 DAO
+        raw_snippets = vector_dao.query_snippets(book_name, tag, n_results=2)
+
+        # 将底层返回的数据格式，转换为前端渲染和生成正文所需的格式
+        formatted_snippets = []
+        for s in raw_snippets:
+            formatted_snippets.append({
+                "chapter_id": s.get("chapter_id"),
+                "original_text": s.get("content")
+            })
+
+        # 打包这一条检索词的结果
+        all_results.append({
+            "query": tag,
+            "snippets": formatted_snippets
+        })
+
+    return all_results
 
 
 def generate_chapter_content_stream(book_name: str, chapter_id: int, content_plan: str,
