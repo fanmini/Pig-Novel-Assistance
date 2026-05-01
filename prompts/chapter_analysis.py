@@ -85,9 +85,7 @@ PROMPT_PLOT_ENGINE_COLD_START = """
       "content": "提取本章中作者刻意留白的悬疑点。不是说某句话很奇怪就算伏笔，而是那些明显带有“此处在为后文埋线”意图的异常细节。比如一个不该出现在此地的人物被主角瞥见一个背影，比如一块玉佩上出现了从未被提及的裂痕。过滤掉那些只是常规描写的模糊之处。"
     }} 
   ],
-  "revealed_foreshadows": [
-    "第一章通常无伏笔被回收，保持空数组 []"
-  ]
+  "revealed_foreshadows": []
 }}
 """
 
@@ -402,13 +400,13 @@ PROMPT_VECTOR_TAGS = """
   "snippets": [
     {{
       "content": "从本草正文中复制的，具有高度画面感、爽点或独特性的原文段落。200-500字。",
-      "scene_type": ["战斗"],
-      "plot_trope": ["绝境反杀"],
+      "scene_type": ["对抗"],
+      "plot_trope": ["冲突与获取"],
       "characters": ["张三", "李四"],
       "factions": ["天岚宗"],
       "items": ["破空剑法"],
       "locations": ["云岚宗后山"],
-      "description_focus": ["技能特效"]
+      "description_focus": ["动作与表现力"]
     }}
   ]
 }}

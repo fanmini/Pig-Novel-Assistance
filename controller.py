@@ -104,7 +104,7 @@ def finalize_chapter(book_name, chapter_id):
     is_re_final = data.get('is_re_final', False)
 
     # 状态强行标记为 true (已定稿)
-    dao.update_chapter(book_name, chapter_id, title=title, content=content, status=True)
+    dao.update_chapter(book_name, chapter_id, title=title, content=content)
 
     # 【核心修改】：不再直接返回 JSON，而是返回流式事件，唤醒前端的小助手
     return Response(

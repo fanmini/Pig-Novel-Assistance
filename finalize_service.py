@@ -158,7 +158,16 @@ def _get_cid(s):
 
 def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, entity_json: dict,
                               known_involved_chars: list, active_main_id: str, active_sub_id: str):
-    """处理并合并一二轨数据，落盘。"""
+    if not isinstance(entity_json, dict):
+        entity_json = {}
+    if not isinstance(plot_json, dict):
+        plot_json = {}
+
+        # 强制提取情绪强度中的数字，防止大模型回复 "8/10" 或 "8分"
+    raw_emotion = str(plot_json.get('emotion_intensity', '1'))
+    import re
+    emo_match = re.search(r'\d+', raw_emotion)
+    plot_json['emotion_intensity'] = int(emo_match.group()) if emo_match else 1
     # ================= 1. 统筹角色出场大名单 =================
     discoveries = entity_json.get('new_discoveries', {}) if entity_json else {}
     known_char_names = [c['character_name'] for c in known_involved_chars]
@@ -426,14 +435,20 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
             import traceback
             traceback.print_exc()
             log_step("主控中心", "error", f"❌ 引擎运行出现致命错误: {str(e)}")
-            q.put("DONE")
+            q.put("ERROR")
 
     threading.Thread(target=worker).start()
 
     while True:
         msg = q.get()
         if msg == "DONE":
+            dao.update_chapter(book_name, chapter_id, status=True)
             yield f"data: {json.dumps({'type': 'step', 'engine': '完成', 'status': 'success', 'msg': '🎉 核心定稿全线跑通！'})}\n\n"
+            yield "data: [DONE]\n\n"
+            break
+        elif msg == "ERROR":
+            # 【新增】：拦截 ERROR，告知前端失败，不标记定稿
+            yield f"data: {json.dumps({'type': 'step', 'engine': '完成', 'status': 'error', 'msg': '❌ 定稿流程因异常中断，请检查控制台。'})}\n\n"
             yield "data: [DONE]\n\n"
             break
         else:

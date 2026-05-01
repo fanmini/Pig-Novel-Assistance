@@ -526,6 +526,11 @@
                           }
                           try {
                               const parsed = JSON.parse(data);
+                              if (parsed.error) {
+                                  showToast('生成中断: ' + parsed.error, 'error');
+                                  genMsg.content = '❌ 生成出错: ' + parsed.error;
+                                  return; // 退出循环
+                              }
                               // 【核心】：拦截后端的 debug_info 消息
                               if (parsed.type === 'debug_info') {
                                   genMsg.debug_info = parsed.data;

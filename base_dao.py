@@ -316,7 +316,8 @@ class NovelModel:
             # 同步重构 change_log (去除该章节的内容)
             if char.get("change_log"):
                 logs = char["change_log"].split('\n')
-                new_logs = [log for log in logs if f"第{chapter_id}章" not in log]
+                # 严格匹配你生成的标准前缀，防止误伤
+                new_logs = [log for log in logs if not log.startswith(f"【第{chapter_id}章】")]
                 if len(logs) != len(new_logs):
                     char["change_log"] = '\n'.join(new_logs)
                     char_changed = True
