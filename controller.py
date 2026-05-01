@@ -398,24 +398,24 @@ def get_vector_tags(book_name):
 
 
 @api_bp.route('/ai/generate_content/stream', methods=['POST'])
+@api_bp.route('/ai/generate_content/stream', methods=['POST'])
 def ai_generate_content_stream():
-    """接口C：最后一步，打字机流式生成正文"""
+    """接口C：最后一步，打字机流式生成正文（带兜底保护机制）"""
     data = request.json
     book_name = data.get('book_name')
     chapter_id = data.get('chapter_id')
     content_plan = data.get('content_plan', '')
     selected_chars = data.get('selected_chars', [])
-    retrieved_snippets = data.get('retrieved_snippets', [])  # 这是前端确认没问题的片段集合
+    retrieved_snippets = data.get('retrieved_snippets', [])
 
     def generate():
+        full_text = ""  # 用于在后端缓存正在生成的每一滴文字
         try:
-            # 【修改】接收两个返回值：流 和 提示词
             stream, prompt_text = generate_chapter_content_stream(
                 book_name, chapter_id, content_plan,
                 selected_chars, retrieved_snippets
             )
 
-            # 【新增】在流式输出正文前，先下发一条特殊的 debug_info 消息
             debug_data = {
                 "type": "debug_info",
                 "data": {
@@ -428,14 +428,33 @@ def ai_generate_content_stream():
             }
             yield f"data: {json.dumps(debug_data)}\n\n"
 
-            # 之后再开始正常下发正文
             for chunk in stream:
                 if ai_handler._stop_event.is_set(): break
                 content = chunk.choices[0].delta.content or ""
+                full_text += content  # 后端同步积攒文字
                 yield f"data: {json.dumps({'content': content})}\n\n"
+
+        except GeneratorExit:
+            # 【关键捕获】：这是前端切换界面、断开连接时必然触发的异常
+            # 我们捕获它，啥也不用做，让代码平稳滑到 finally 里面去保存
+            pass
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         finally:
+            # 【终极兜底机制】：只要有了文字，不管前端死活，统统落盘！
+            if full_text:
+                try:
+                    chapter = dao.get_chapter(book_name, chapter_id)
+                    if chapter:
+                        existing_content = chapter.get('content', '')
+                        if existing_content and not existing_content.endswith('\n\n'):
+                            new_content = existing_content + '\n\n' + full_text
+                        else:
+                            new_content = existing_content + full_text
+                        dao.update_chapter(book_name, chapter_id, content=new_content)
+                except Exception as e:
+                    print(f"流式兜底保存发生错误: {e}")
+
             yield "data: [DONE]\n\n"
 
     return Response(generate(), mimetype='text/event-stream')

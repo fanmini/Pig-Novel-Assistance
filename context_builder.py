@@ -37,22 +37,38 @@ def build_global_knowledge(book_name: str) -> str:
 
 
 def build_macro_storyline(book_name: str, active_main_id: str) -> str:
-    """公共基座 2：宏观金字塔大纲 (从头遍历到当前活跃大节点)"""
+    """公共基座 2：宏观金字塔大纲 (从头遍历到当前活跃大节点，并增加章节顺序感)"""
     storylines = dao.list_storylines(book_name)
-    lines = []
+    analyses = dao.list_chapter_analyses(book_name)
 
+    # 统计每个节点绑定的章节范围
+    node_chapters = {}
+    for an in analyses:
+        cid = an.get('chapter_id')
+        main_id = an.get('bound_main_node_id')
+        sub_id = an.get('bound_sub_node_id')
+        if main_id:
+            node_chapters.setdefault(main_id, []).append(cid)
+        if sub_id:
+            node_chapters.setdefault(sub_id, []).append(cid)
+
+    lines = []
     for p in storylines:
+        p_chaps = node_chapters.get(p['id'], [])
+        range_str = f" (第{min(p_chaps)}-{max(p_chaps)}章)" if p_chaps else ""
         status_str = "✅已完结" if p.get('is_completed') else "🔄进行中"
-        lines.append(f"【大节点：{p.get('name')}】 {status_str}")
+
+        lines.append(f"【大节点：{p.get('name')}】{range_str} {status_str}")
         lines.append(f"  └─ 核心内容: {p.get('content', '暂无描述')}")
 
-        # 只有当到达“当前正在进行的大节点”时，才展开内部的小节点详情
         if p['id'] == active_main_id:
             for c in p.get('children', []):
+                c_chaps = node_chapters.get(c['id'], [])
+                c_range_str = f" (第{min(c_chaps)}-{max(c_chaps)}章)" if c_chaps else ""
                 c_status = "✅已完结" if c.get('is_completed') else "🔄进行中"
-                lines.append(f"    ▶ 【当前大节点下的子节点：{c.get('name')}】 {c_status}")
+                lines.append(f"    ▶ 【当前大节点下的子节点：{c.get('name')}】{c_range_str} {c_status}")
                 lines.append(f"      └─ 核心内容: {c.get('content', '暂无描述')}")
-            break  # 不再透传未来的大节点，防止 AI 剧透或混淆
+            break
 
     return "\n".join(lines) if lines else "暂无宏观大纲"
 

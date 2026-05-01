@@ -388,15 +388,23 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
 
             entities_text = build_full_lifecycle_entities(book_name, char_names, faction_names,
                                                           max_chapter_id=chapter_id)
+
+            # 【新增修复】：提取章节标题并拼接，赋予 AI 强烈的章节和时间感知
+            chapter_obj = dao.get_chapter(book_name, chapter_id)
+            chapter_title = chapter_obj.get('title', '无标题') if chapter_obj else '无标题'
+            content_with_title = f"【当前分析定稿章节】：第 {chapter_id} 章 - {chapter_title}\n\n{content}"
+
             log_step("第一轨 (剧情)", "processing", "⏳ 剧情推演引擎正在运算中...")
             plot_future = executor.submit(
-                task_plot_engine, chapter_id, content, global_knowledge, macro_storyline,
+                # 注意这里把原来的 content 换成了 content_with_title
+                task_plot_engine, chapter_id, content_with_title, global_knowledge, macro_storyline,
                 micro_details, entities_text, current_main_name, current_sub_name, ai_config
             )
 
             log_step("第二轨 (生灵)", "processing", "⏳ 实体生命周期引擎正在运算中...")
             entity_future = executor.submit(
-                task_entity_engine, chapter_id, content, global_knowledge, macro_storyline,
+                # 注意这里也把原来的 content 换成了 content_with_title
+                task_entity_engine, chapter_id, content_with_title, global_knowledge, macro_storyline,
                 micro_details, entities_text, ai_config
             )
 
@@ -424,7 +432,7 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
             updated_entities_text = build_full_lifecycle_entities(book_name, char_names_new, faction_names_new,
                                                                   max_chapter_id=chapter_id + 1)
             vector_result = task_vector_engine(
-                book_name, chapter_id, content, global_knowledge, macro_storyline,
+                book_name, chapter_id, content_with_title, global_knowledge, macro_storyline,
                 micro_details, updated_entities_text, current_main_name, current_sub_name, ai_config
             )
             log_step("第三轨 (向量)", "success", "✅ 高光片段已打标并存入知识库！", debug=vector_result)

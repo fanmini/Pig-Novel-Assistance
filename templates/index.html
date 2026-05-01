@@ -316,6 +316,27 @@
 
       const slBindModal = reactive({ visible: false, chapterId: null, selected: '' });
 
+      // 辅助函数：生成完整的 7 维度过滤漏斗，默认 enabled 均为 false (不启用)
+      function createDefaultFilters() {
+          return {
+              scene_type: { value: '', enabled: false },
+              plot_trope: { value: '', enabled: false },
+              characters: { value: '', enabled: false },
+              factions: { value: '', enabled: false },
+              items: { value: '', enabled: false },
+              locations: { value: '', enabled: false },
+              description_focus: { value: '', enabled: false }
+          };
+      }
+
+      // 新增：全选/清空过滤器的便捷方法
+      function toggleAllFilters(tagObj, state) {
+          for (let key in tagObj.filters) {
+              tagObj.filters[key].enabled = state;
+          }
+      }
+
+
       function openStorylineBindModal(chapterId) {
           slBindModal.chapterId = chapterId;
           const analysis = getAnalysis(chapterId);
@@ -395,8 +416,31 @@
       // 2. 打开共创弹窗，并初始化数据
       function openGenModal(planData) {
           genModal.content_plan = planData.content_plan || '';
-          // 将字符串数组转为对象数组，方便在 v-for 里做双向绑定 (v-model)
-          genModal.suggested_tags = (planData.suggested_tags || []).map(t => ({ value: t }));
+
+          genModal.suggested_tags = (planData.suggested_tags || []).map(t => {
+              let obj = {
+                  query: '',
+                  filters: createDefaultFilters(),
+                  showFilters: false
+              };
+              if (typeof t === 'string') {
+                  if (t.includes('|') && t.includes(':')) {
+                      const parts = t.split('|');
+                      parts.forEach(p => {
+                          const [k, v] = p.split(':', 2);
+                          if (k === 'query') obj.query = v || '';
+                          else if (obj.filters.hasOwnProperty(k)) {
+                              obj.filters[k].value = v || '';
+                              obj.filters[k].enabled = false; // AI 生成的默认帮它打勾启用
+                          }
+                      });
+                  } else {
+                      obj.query = t;
+                  }
+              }
+              return obj;
+          });
+
           genModal.selected_chars = planData.involved_characters || [];
           genModal.retrieved_results = [];
           genModal.debug_info = planData.debug_info || null;
@@ -404,16 +448,23 @@
       }
 
       // 添加/删除 标签输入框
-      function addTagInput() { genModal.suggested_tags.push({ value: '' }); }
+      function addTagInput() {
+          genModal.suggested_tags.push({
+              query: '',
+              filters: createDefaultFilters(),
+              showFilters: true // 手动添加时默认展开面板方便编辑
+          });
+      }
       function removeTagInput(index) {
-          const removedTag = genModal.suggested_tags[index].value.trim();
+          // 注意这里从 value.trim() 改成了 query.trim()
+          const removedTag = genModal.suggested_tags[index].query.trim();
           genModal.suggested_tags.splice(index, 1);
 
-          // 【核心联动】：如果刚才删掉的标签已经检索出了片段，同步将其踢出 UI
           if (removedTag && genModal.retrieved_results.length > 0) {
-              genModal.retrieved_results = genModal.retrieved_results.filter(res => res.query !== removedTag);
+              genModal.retrieved_results = genModal.retrieved_results.filter(res => !res.query.includes(removedTag));
           }
       }
+
 
       const allVectorTags = ref([]);
       const tagsModalVisible = ref(false);
@@ -427,13 +478,26 @@
       }
 
       function quickAddTag(tag) {
-          genModal.suggested_tags.push({ value: tag });
+          genModal.suggested_tags.push({
+              query: tag,
+              filters: createDefaultFilters(),
+              showFilters: false
+          });
           showToast('已添加入检索队列', 'success');
       }
 
       // 3. 点击“试检索”，去知识库查询
       async function queryGenVectors() {
-          const tags = genModal.suggested_tags.map(t => t.value.trim()).filter(t => t);
+          // 【核心重构】：只有被勾选 (enabled 为 true) 且有值的项，才会参与检索！
+          const tags = genModal.suggested_tags.map(tagObj => {
+              let ragTag = `query:${tagObj.query.trim()}`;
+              for (const [key, filterObj] of Object.entries(tagObj.filters)) {
+                  if (filterObj.enabled && filterObj.value && filterObj.value.trim()) {
+                      ragTag = `${key}:${filterObj.value.trim()}|${ragTag}`;
+                  }
+              }
+              return ragTag;
+          }).filter(t => t !== 'query:');
           if (!tags.length) return showToast('请至少输入一个检索词', 'error');
 
           genModal.isQuerying = true;
@@ -443,12 +507,27 @@
                   body: JSON.stringify({ book_name: currentBook.value, tags: tags })
               });
 
-              // 为每个片段加上 isExcluded 属性，方便用户踢出废数据
+              // 【核心修复：全局跨词条去重】
+              const seenSnippets = new Set(); // 建立一个记事本，记录已经见过的片段
+
               res.forEach(group => {
-                  group.snippets.forEach(s => s.isExcluded = false);
+                  // 过滤掉已经在前面的查询中出现过的片段
+                  group.snippets = group.snippets.filter(s => {
+                      // 用 "章节号 + 文本内容" 作为唯一身份标识
+                      const uniqueId = s.chapter_id + '_' + s.original_text;
+
+                      if (seenSnippets.has(uniqueId)) {
+                          return false; // 以前见过了，直接扔掉（去重）
+                      } else {
+                          seenSnippets.add(uniqueId); // 没见过，记在小本本上
+                          s.isExcluded = false; // 初始化状态，默认不踢出
+                          return true;  // 保留
+                      }
+                  });
               });
+
               genModal.retrieved_results = res;
-              showToast('检索完成，请审阅结果', 'success');
+              showToast('检索完成，已自动过滤重复片段', 'success');
           } catch(e) {
               showToast('检索失败: ' + e.message, 'error');
           } finally {
@@ -1308,6 +1387,7 @@
         vectorSnippetsList, expandedVectorChapters, vectorSearchModal,
         groupedVectorSnippets, toggleVectorExpand, filterMetadata,
         formatMetaKey, openVectorSearchModal, testVectorSearch,
+        toggleAllFilters,
 
 
         // 新增的绑定故事线相关变量和方法
@@ -2040,9 +2120,42 @@
                     <div class="accordion-body" v-show="genModal.expandKnowledge">
                         <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
                             <div style="flex:1;">
-                                <div v-for="(tag, index) in genModal.suggested_tags" :key="index" class="tag-input-row">
-                                    <input v-model="tag.value" placeholder="请输入检索短句，如：张三使用破空剑法的历史细节">
-                                    <button class="remove-tag-btn" @click="removeTagInput(index)">✕</button>
+                                <div v-for="(tagObj, index) in genModal.suggested_tags" :key="index" style="background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+                                    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                                        <input v-model="tagObj.query" placeholder="【必填】语义查询词，如：张三反杀的细节" style="flex: 1; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; font-size: 13px;">
+                                        <button class="modal-btn secondary" @click="tagObj.showFilters = !tagObj.showFilters" style="padding: 6px 10px; font-size: 12px; border: 1px solid #e2e8f0;">
+                                            [[ tagObj.showFilters ? '收起漏斗' : '展开高级漏斗' ]]
+                                        </button>
+                                        <button class="remove-tag-btn" @click="removeTagInput(index)">✕</button>
+                                    </div>
+
+                                    <!-- 高级漏斗面板 -->
+                                    <div v-show="tagObj.showFilters" style="background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px dashed #cbd5e1;">
+
+                                        <!-- 顶部栏：提示与快捷全选操作 -->
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">
+                                            <span style="font-size: 12px; font-weight: 600; color: #475569;">漏斗条件 (勾选方可生效，匹配更精准)：</span>
+                                            <div style="display: flex; gap: 10px;">
+                                                <button class="add-event-btn" style="margin:0;" @click="toggleAllFilters(tagObj, true)">☑ 全部启用</button>
+                                                <button class="add-event-btn" style="margin:0; color:#ef4444;" @click="toggleAllFilters(tagObj, false)">☐ 全部清空</button>
+                                            </div>
+                                        </div>
+
+                                        <!-- 7大维度漏斗输入 -->
+                                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                                            <div v-for="(label, key) in {'scene_type':'片段类型', 'plot_trope':'剧情类型', 'characters':'涉及角色', 'factions':'涉及势力', 'items':'涉及物品', 'locations':'地理坐标', 'description_focus':'描写焦点'}" :key="key">
+                                                <label style="font-size: 11px; color: #64748b; display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 4px;">
+                                                    <input type="checkbox" v-model="tagObj.filters[key].enabled" style="margin:0; cursor: pointer;">
+                                                    <span :style="tagObj.filters[key].enabled ? 'color:#3b82f6; font-weight:bold;' : ''">[[ label ]] ([[ key ]])</span>
+                                                </label>
+                                                <input v-model="tagObj.filters[key].value"
+                                                       :disabled="!tagObj.filters[key].enabled"
+                                                       :style="!tagObj.filters[key].enabled ? 'background:#e2e8f0; cursor:not-allowed; opacity:0.6;' : 'background:#fff; border-color:#3b82f6;'"
+                                                       style="width:100%; padding:6px 8px; border:1px solid #cbd5e1; border-radius:4px; font-size:12px; outline:none;">
+                                            </div>
+                                        </div>
+
+                                    </div>
                                 </div>
                                 <button class="add-event-btn" @click="addTagInput">+ 添加检索词</button>
                             </div>

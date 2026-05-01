@@ -54,30 +54,26 @@ class VectorDAO:
         """
         collection = self._get_collection(book_name)
 
-        # 1. 构建合规的 Metadata (将列表扁平化为字符串)
         safe_metadata = {"chapter_id": chapter_id, "raw_content": content}
 
         for key, value in snippet_meta.items():
             if isinstance(value, list):
-                # 【关键修复】：直接存数组！并且 ChromaDB 不允许存空数组，所以有值才存入
+                # 【关键修复】：ChromaDB 的 metadata 在处理 $contains 时，如果值为 list 极易引发版本异常。
+                # 统一将其转换为逗号分隔的字符串，完美适配底层的模糊查询。
                 if len(value) > 0:
-                    safe_metadata[key] = value
+                    safe_metadata[key] = ",".join(str(v) for v in value)
             elif isinstance(value, (str, int, float, bool)) and value != "":
                 safe_metadata[key] = value
 
-        # 2. 复合文档构建
-        # 为了不破坏语义纯净度，但又增加可搜性，我们在最开头简单拼接一下核心分类词汇
         scene = safe_metadata.get("scene_type", "")
         trope = safe_metadata.get("plot_trope", "")
         rich_document = f"【{scene} - {trope}】\n{content}"
 
-        # 3. 生成唯一 ID
         doc_id = f"chap_{chapter_id}_{hashlib.md5(content.encode('utf-8')).hexdigest()[:10]}"
 
-        # 4. 入库
         collection.add(
             documents=[rich_document],
-            metadatas=[safe_metadata],  # 存入被扁平化的结构字典
+            metadatas=[safe_metadata],
             ids=[doc_id]
         )
         print(f"[VectorDB] 已存入第 {chapter_id} 章高光片段，元数据：{safe_metadata}")

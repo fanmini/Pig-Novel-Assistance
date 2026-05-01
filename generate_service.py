@@ -17,11 +17,9 @@ def clean_json_string(text: str) -> dict:
 
 
 def generate_chapter_plan(book_name: str, chapter_id: int, user_draft: str) -> dict:
-    """阶段一：接收用户草稿，生成【规划】与【检索词】"""
     ai_config = load_ai_config()
     global_knowledge = build_global_knowledge(book_name)
 
-    # 【时光倒流1】：如果这章以前定稿过，强行找回它的老节点，屏蔽后续大纲
     storylines = dao.list_storylines(book_name)
     analyses = dao.list_chapter_analyses(book_name)
     existing_analysis = next((an for an in analyses if an.get("chapter_id") == chapter_id), None)
@@ -38,18 +36,22 @@ def generate_chapter_plan(book_name: str, chapter_id: int, user_draft: str) -> d
     involved_chars = [c['character_name'] for c in all_chars if c['character_name'] in user_draft]
     involved_factions = [f['name'] for f in all_factions if f['name'] in user_draft]
 
-    # 【时光倒流2】：传 max_chapter_id 屏蔽未来的人物和势力档案
     entities_context = build_full_lifecycle_entities(
         book_name, char_names=involved_chars,
         faction_names=involved_factions, max_chapter_id=chapter_id
     )
 
-    # 2. 组装 Prompt (将新增的变量填入格式化字符串)
+    # 提取当前章节标题
+    chapter = dao.get_chapter(book_name, chapter_id)
+    chapter_title = chapter.get('title', '无标题') if chapter else '无标题'
+
     prompt = PROMPT_PLAN_AND_QUERY.format(
         global_knowledge=global_knowledge,
         entities_context=entities_context,
         macro_storyline=macro_storyline,
         micro_details=micro_details,
+        chapter_id=chapter_id,         # 增加占位符注入
+        chapter_title=chapter_title,   # 增加占位符注入
         user_draft=user_draft
     )
 
@@ -84,11 +86,11 @@ def query_vector_knowledge(book_name: str, tags: list) -> list:
         if not tag.strip():
             continue
 
-        where_filter = {}
+        # 【修复1】改为使用列表收集所有的过滤条件
+        conditions = []
         query_text = tag
 
-        # 【核心逻辑】：解析高阶 RAG 管道语法
-        # 例如: "scene_type:战斗|characters:张三|query:破空剑法细节"
+        # 解析高阶 RAG 管道语法
         if "|" in tag and ":" in tag:
             parts = tag.split("|")
             query_text = ""
@@ -98,10 +100,9 @@ def query_vector_knowledge(book_name: str, tags: list) -> list:
                     k, v = k.strip(), v.strip()
                     if k == "query":
                         query_text = v
-                    # 若匹配到我们的 8 个固定维度，转入 ChromaDB 的元数据过滤
                     elif k in ["scene_type", "plot_trope", "characters", "factions", "items", "locations", "description_focus"]:
-                        # 使用 ChromaDB 的 $contains 语法，实现逗号分隔文本的精准包含查询
-                        where_filter[k] = {"$contains": v}
+                        # 【修复2】将每个条件作为一个独立的字典存入列表
+                        conditions.append({k: {"$contains": v}})
                 else:
                     query_text += part
 
@@ -109,8 +110,14 @@ def query_vector_knowledge(book_name: str, tags: list) -> list:
         if not query_text.strip():
             query_text = tag
 
-        # 传入 query_text 查相似度，传入 where_filter 查确切属性！
-        filter_dict = where_filter if where_filter else None
+        # 【核心修复】：根据条件数量，构造 ChromaDB 认识的 $and 语法
+        filter_dict = None
+        if len(conditions) == 1:
+            filter_dict = conditions[0]  # 只有一个条件，直接传
+        elif len(conditions) > 1:
+            filter_dict = {"$and": conditions}  # 多个条件，必须用 $and 包裹
+
+        # 传入 query_text 查相似度，传入 filter_dict 查确切属性
         raw_snippets = vector_dao.query_snippets(book_name, query_text, n_results=2, where_filter=filter_dict)
 
         # 转换为前端渲染所需的格式
@@ -133,13 +140,24 @@ def generate_chapter_content_stream(book_name: str, chapter_id: int, content_pla
                                     selected_chars: list, retrieved_snippets: list):
     """阶段三：大模型正式流式打字生成正文"""
     ai_config = load_ai_config()
-
     global_knowledge = build_global_knowledge(book_name)
-
-    # 【核心：Context Control】只投喂前端用户打勾选中的角色和势力！
     entities_context = build_full_lifecycle_entities(book_name, char_names=selected_chars, max_chapter_id=chapter_id)
 
-    # 拼装从知识库搜出来的结果文本
+    # 【关键修复】：提取之前丢失的宏观大纲和微观细节
+    storylines = dao.list_storylines(book_name)
+    analyses = dao.list_chapter_analyses(book_name)
+    existing_analysis = next((an for an in analyses if an.get("chapter_id") == chapter_id), None)
+    active_main_id = existing_analysis.get("bound_main_node_id") if existing_analysis else ""
+    if not active_main_id:
+        active_main_id = next((p['id'] for p in storylines if not p.get('is_completed')), "")
+
+    macro_storyline = build_macro_storyline(book_name, active_main_id)
+    micro_details = build_micro_details(book_name, chapter_id)
+
+    # 提取当前章节标题
+    chapter = dao.get_chapter(book_name, chapter_id)
+    chapter_title = chapter.get('title', '无标题') if chapter else '无标题'
+
     snippets_text = "暂无相关历史片段。"
     if retrieved_snippets:
         lines = []
@@ -154,7 +172,11 @@ def generate_chapter_content_stream(book_name: str, chapter_id: int, content_pla
         global_knowledge=global_knowledge,
         entities_context=entities_context,
         retrieved_snippets=snippets_text,
-        content_plan=content_plan
+        content_plan=content_plan,
+        macro_storyline=macro_storyline,  # 填补原先缺失的参数
+        micro_details=micro_details,  # 填补原先缺失的参数
+        chapter_id=chapter_id,  # 增加占位符注入
+        chapter_title=chapter_title  # 增加占位符注入
     )
 
     # 返回流式 Generator 供 Flask 推送 SSE
