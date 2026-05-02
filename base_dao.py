@@ -197,13 +197,14 @@ class NovelModel:
         return None
 
     def add_character(self, book_name: str, character_name: str,
-                      importance_level: int = 1, profile: str = "",
+                      importance_level: int = 1, profile: str = "", personal_info: str = "",
                       relationships: List[Dict[str, Any]] = None, change_log: str = "") -> bool:
         if self.get_character(book_name, character_name): return False
         new_char = {
             "character_name": character_name, "importance_level": importance_level,
+            "personal_info": personal_info,  # 【新增】个人资料字段
             "profile": profile, "relationships": relationships or [],
-            "change_log": change_log, "arc_history": []  # 弧光历史记录表
+            "change_log": change_log, "arc_history": []
         }
         characters = self.list_characters(book_name)
         characters.append(new_char)
@@ -214,9 +215,10 @@ class NovelModel:
         characters = self.list_characters(book_name)
         target = next((ch for ch in characters if ch.get("character_name") == character_name), None)
         if not target: return False
-        allowed = ["importance_level", "profile", "relationships", "change_log", "arc_history"]
+        allowed = ["importance_level", "personal_info", "profile", "relationships", "change_log", "arc_history"]
         for key, value in kwargs.items():
             if key in allowed: target[key] = value
+        # ... 后面保持不变 ...
 
         new_name = kwargs.get("new_character_name")
         if new_name and new_name != character_name:

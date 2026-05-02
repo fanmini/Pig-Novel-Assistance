@@ -4,7 +4,7 @@ import re
 from context_builder import *
 from vector_dao import vector_dao
 from ai_handler import ai_handler, load_ai_config
-from prompts.chapter_generation import PROMPT_PLAN_AND_QUERY, PROMPT_GENERATE_CONTENT
+from prompts.chapter_generation import *
 
 
 def clean_json_string(text: str) -> dict:
@@ -45,25 +45,28 @@ def generate_chapter_plan(book_name: str, chapter_id: int, user_draft: str) -> d
     chapter = dao.get_chapter(book_name, chapter_id)
     chapter_title = chapter.get('title', '无标题') if chapter else '无标题'
 
-    prompt = PROMPT_PLAN_AND_QUERY.format(
+    safe_draft = user_draft.strip() if user_draft and user_draft.strip() else "暂无作者预设思路，请根据故事线自由推演本章节点。"
+
+    prompt = PROMPT_PLAN_USER.format(
         global_knowledge=global_knowledge,
         entities_context=entities_context,
         macro_storyline=macro_storyline,
         micro_details=micro_details,
         chapter_id=chapter_id,         # 增加占位符注入
         chapter_title=chapter_title,   # 增加占位符注入
-        user_draft=user_draft
+        user_draft=safe_draft
     )
 
     # 3. 调用 AI (非流式，要求严格 JSON)
     response = ai_handler.chat(
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "system", "content": PROMPT_PLAN_SYSTEM},{"role": "user", "content": prompt}],
         model=ai_config.get('model', 'openai/gpt-4o-mini'),
         api_key=ai_config.get('api_key', ''),
-        max_tokens=2048,
-        temperature=0.3
-    )
+        max_tokens=int(ai_config.get('max_tokens', 8192)),
+        temperature=float(ai_config.get('temperature', 0.7)),
+        top_p=float(ai_config.get('top_p', 1.0)),
 
+    )
     raw_content = response.choices[0].message.content
     parsed = clean_json_string(raw_content)
 
@@ -71,7 +74,7 @@ def generate_chapter_plan(book_name: str, chapter_id: int, user_draft: str) -> d
     parsed['debug_info'] = {
         "engine": "章节生成 - 第一阶段：意图解析",
         "debug": {
-            "prompt": prompt,
+            "prompt": PROMPT_PLAN_SYSTEM+'\t'+prompt,
             "response": raw_content
         }
     }
@@ -168,26 +171,28 @@ def generate_chapter_content_stream(book_name: str, chapter_id: int, content_pla
                     f"[针对'{query}'查到的资料 (来源第{snip.get('chapter_id')}章)]:\n{snip.get('original_text')}\n")
         snippets_text = "\n".join(lines)
 
-    prompt = PROMPT_GENERATE_CONTENT.format(
+    safe_plan = content_plan.strip() if content_plan and content_plan.strip() else "暂无细化大纲，请严格依据大节点推进剧情。"
+
+    prompt = PROMPT_CONTENT_USER.format(
         global_knowledge=global_knowledge,
         entities_context=entities_context,
         retrieved_snippets=snippets_text,
-        content_plan=content_plan,
-        macro_storyline=macro_storyline,  # 填补原先缺失的参数
-        micro_details=micro_details,  # 填补原先缺失的参数
-        chapter_id=chapter_id,  # 增加占位符注入
-        chapter_title=chapter_title  # 增加占位符注入
+        content_plan=safe_plan,
+        macro_storyline=macro_storyline,
+        micro_details=micro_details,
+        chapter_id=chapter_id,
+        chapter_title=chapter_title
     )
 
     # 返回流式 Generator 供 Flask 推送 SSE
     stream = ai_handler.chat(
-        [{"role": "user", "content": prompt}],
+        messages = [{"role": "system", "content": PROMPT_CONTENT_SYSTEM},{"role": "user", "content": prompt}],
         model=ai_config.get('model', 'openai/gpt-4o-mini'),
         api_key=ai_config.get('api_key', ''),
         max_tokens=int(ai_config.get('max_tokens', 8192)),
-        top_p=ai_config.get('top_p', 1.0),
-        temperature=ai_config.get('temperature', 0.8),  # 生成正文，温度稍微高一点以增加文采
-        stream=True
+        temperature=float(ai_config.get('temperature', 0.7)),
+        top_p=float(ai_config.get('top_p', 1.0)),
+        stream=True,
     )
 
-    return stream, prompt
+    return stream, PROMPT_CONTENT_SYSTEM+'\t'+prompt

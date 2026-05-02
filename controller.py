@@ -2,10 +2,13 @@ import json
 import uuid
 
 from flask import Blueprint, request, jsonify, Response
+
+from entity_shaping_service import generate_entity_shaping
 from finalize_service import run_finalize_pipeline_stream, cleanup_chapter_data
 from ai_handler import ai_handler, load_ai_config, save_ai_config
 from base_dao import NovelModel
 from generate_service import generate_chapter_plan, query_vector_knowledge, generate_chapter_content_stream
+from storyline_service import generate_storyline_summary
 from vector_dao import vector_dao
 
 api_bp = Blueprint('api', __name__)
@@ -125,6 +128,7 @@ def add_character(book_name):
         return jsonify({'error': '角色名不能为空'}), 400
     success = dao.add_character(book_name, name,
                                 importance_level=data.get('importance_level', 1),
+                                personal_info=data.get('personal_info', ''), # 【新增】接收个人资料
                                 profile=data.get('profile', ''),
                                 relationships=data.get('relationships', []),
                                 change_log=data.get('change_log', ''))
@@ -251,6 +255,23 @@ def update_storylines(book_name):
     if success:
         return jsonify({'message': '更新成功'})
     return jsonify({'error': '更新失败'}), 400
+
+@api_bp.route('/books/<book_name>/storylines/summarize/<node_id>', methods=['POST'])
+def summarize_storyline_node(book_name, node_id):
+    """触发 AI 对指定的故事线节点进行智能总结并回填"""
+    data = request.json or {}
+    preview_only = data.get('preview_only', False)  # 获取前端是否只要预览
+    try:
+        result = generate_storyline_summary(book_name, node_id, preview_only=preview_only)
+        return jsonify(result)
+    except ValueError as ve:
+        # 捕获我们在 Service 里主动抛出的没找到节点或没绑定章节的错误
+        return jsonify({'error': str(ve)}), 400
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'总结失败: {str(e)}'}), 500
+
 
 
 # ==================== 势力相关接口 (新增) ====================
@@ -458,3 +479,34 @@ def ai_generate_content_stream():
             yield "data: [DONE]\n\n"
 
     return Response(generate(), mimetype='text/event-stream')
+
+
+@api_bp.route('/ai/entity_shape', methods=['POST'])
+def ai_entity_shape():
+    """右侧AI助手：全知视角的角色/势力塑造与补全"""
+    data = request.json
+    book_name = data.get('book_name')
+    target_desc = data.get('target_desc', '未指定目标')
+    ref_desc = data.get('ref_desc', '无参考实体')
+    user_prompt = data.get('user_prompt', '')
+    preview_only = data.get('preview_only', False)
+
+    if not book_name or not user_prompt:
+        return jsonify({"error": "书籍名称和诉求不能为空"}), 400
+
+    try:
+        result = generate_entity_shaping(
+            book_name=book_name,
+            target_desc=target_desc,
+            ref_desc=ref_desc,
+            user_prompt=user_prompt,
+            preview_only=preview_only
+        )
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"塑造生成失败: {str(e)}"}), 500
+
+
+

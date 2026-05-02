@@ -8,10 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from base_dao import NovelModel
 from ai_handler import ai_handler, load_ai_config
 from vector_dao import vector_dao
-from prompts.chapter_analysis import (
-    PROMPT_PLOT_ENGINE_COLD_START, PROMPT_PLOT_ENGINE,
-    PROMPT_ENTITY_ENGINE, PROMPT_VECTOR_TAGS
-)
+from prompts.chapter_analysis import *
 
 # 【极简架构】直接引入我们打造的统一基座
 from context_builder import (
@@ -42,13 +39,14 @@ def task_plot_engine(chapter_id: int, content: str, global_knowledge: str, macro
                      current_sub_name: str, ai_config: dict):
     """第一轨：剧情推演引擎"""
     if chapter_id == 1:
-        prompt = PROMPT_PLOT_ENGINE_COLD_START.format(
+        prompt_user = PROMPT_PLOT_ENGINE_COLD_START_USER.format(
             global_knowledge=global_knowledge,
             entities_context=entities_text,
             content=content
         )
+        prompt_sys = PROMPT_PLOT_ENGINE_COLD_START_SYSTEM
     else:
-        prompt = PROMPT_PLOT_ENGINE.format(
+        prompt_user = PROMPT_PLOT_ENGINE_USER.format(
             global_knowledge=global_knowledge,
             macro_storyline=macro_storyline,
             entities_context=entities_text,
@@ -57,23 +55,24 @@ def task_plot_engine(chapter_id: int, content: str, global_knowledge: str, macro
             current_sub_name=current_sub_name,
             content=content
         )
+        prompt_sys = PROMPT_PLOT_ENGINE_SYSTEM
 
     response = ai_handler.chat(
-        [{"role": "user", "content": prompt}],
+        [{"role": "system", "content": prompt_sys}, {"role": "user", "content": prompt_user}],
         model=ai_config.get('model', 'openai/gpt-4o-mini'),
         api_key=ai_config.get('api_key', ''),
         max_tokens=int(ai_config.get('max_tokens', 8192)),
-        top_p=ai_config.get('top_p', 1.0),
-        temperature=0.2
+        temperature=float(ai_config.get('temperature', 0.7)),
+        top_p=float(ai_config.get('top_p', 1.0)),
     )
     raw_content = response.choices[0].message.content
-    return clean_json_string(raw_content), {"prompt": prompt, "response": raw_content}
+    return clean_json_string(raw_content), {"prompt": prompt_sys+'\t'+prompt_user, "response": raw_content}
 
 
 def task_entity_engine(chapter_id: int, content: str, global_knowledge: str, macro_storyline: str,
                        micro_details: str, entities_text: str, ai_config: dict):
     """第二轨：生灵与势力引擎"""
-    prompt = PROMPT_ENTITY_ENGINE.format(
+    prompt = PROMPT_ENTITY_ENGINE_USER.format(
         global_knowledge=global_knowledge,
         macro_storyline=macro_storyline,
         entities_context=entities_text,
@@ -82,22 +81,23 @@ def task_entity_engine(chapter_id: int, content: str, global_knowledge: str, mac
     )
 
     response = ai_handler.chat(
-        [{"role": "user", "content": prompt}],
+        [{"role": "system", "content": PROMPT_ENTITY_ENGINE_SYSTEM},{"role": "user", "content": prompt}],
         model=ai_config.get('model', 'openai/gpt-4o-mini'),
         api_key=ai_config.get('api_key', ''),
         max_tokens=int(ai_config.get('max_tokens', 8192)),
-        top_p=ai_config.get('top_p', 1.0),
-        temperature=0.3
+        temperature=float(ai_config.get('temperature', 0.7)),
+        top_p=float(ai_config.get('top_p', 1.0)),
+
     )
     raw_content = response.choices[0].message.content
-    return clean_json_string(raw_content), {"prompt": prompt, "response": raw_content}
+    return clean_json_string(raw_content), {"prompt": PROMPT_ENTITY_ENGINE_SYSTEM+'\t'+prompt, "response": raw_content}
 
 
 def task_vector_engine(book_name: str, chapter_id: int, content: str, global_knowledge: str,
                        macro_storyline: str, micro_details: str, updated_entities_context: str,
                        current_main_name: str, current_sub_name: str, ai_config: dict):
     """第三轨：高光与向量引擎 (已升级为 8 维度结构化打标)"""
-    prompt = PROMPT_VECTOR_TAGS.format(
+    prompt = PROMPT_VECTOR_TAGS_USER.format(
         global_knowledge=global_knowledge,
         macro_storyline=macro_storyline,
         entities_context=updated_entities_context,
@@ -108,14 +108,13 @@ def task_vector_engine(book_name: str, chapter_id: int, content: str, global_kno
     )
 
     response = ai_handler.chat(
-        [{"role": "user", "content": prompt}],
+        [{"role": "system", "content": PROMPT_VECTOR_TAGS_SYSTEM}, {"role": "user", "content": prompt}],
         model=ai_config.get('model', 'openai/gpt-4o-mini'),
         api_key=ai_config.get('api_key', ''),
         max_tokens=int(ai_config.get('max_tokens', 8192)),
-        top_p=ai_config.get('top_p', 1.0),
-        temperature=0.3
+        temperature=float(ai_config.get('temperature', 0.7)),
+        top_p=float(ai_config.get('top_p', 1.0)),
     )
-
     raw_content = response.choices[0].message.content
     ai_json = clean_json_string(raw_content)
 
@@ -144,7 +143,7 @@ def task_vector_engine(book_name: str, chapter_id: int, content: str, global_kno
         unique_tags = list(set(all_new_tags))
         dao.add_vector_tags(book_name, chapter_id, unique_tags)
 
-    return {"prompt": prompt, "response": raw_content}
+    return {"prompt": PROMPT_VECTOR_TAGS_SYSTEM+'\t'+prompt, "response": raw_content}
 
 # =====================================================================
 # 落盘处理中心 (纯手工故事线模式，移除复杂的自动状态机)
@@ -205,11 +204,6 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
             dao.add_foreshadow(book_name, fs['name'], chapter_id, fs['content'], status="埋设中")
             fs_to_bind.append(fs['name'])
 
-    # 落盘揭示的伏笔
-    for fs_name in plot_json.get('revealed_foreshadows', []):
-        if fs_name:
-            dao.update_foreshadow(book_name, fs_name, revealed_chapter=chapter_id, status="已揭示")
-            fs_to_bind.append(fs_name)
 
     # 【核心修复】：将本章涉及的伏笔自动绑定到当前活跃的故事线小节点上
     if fs_to_bind and active_main_id and active_sub_id:
@@ -329,7 +323,6 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
 
     def worker():
         try:
-            # 【核心修复：时光倒流记忆术】
             # 在执行 cleanup 清理历史数据之前，先把这章以前绑定的“历史故事线节点”查出来
             existing_analysis = dao.get_chapter_analysis(book_name, chapter_id)
             existing_main_id = existing_analysis.get("bound_main_node_id") if existing_analysis else ""
@@ -349,31 +342,53 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
             active_main_id, active_sub_id = "", ""
             current_main_name, current_sub_name = "未绑定大节点", "未绑定小节点"
 
-            if existing_main_id:
-                # 【情况A：重新定稿】这章以前定稿过！锁定它曾经的历史节点，屏蔽后面的剧透
-                active_main_id = existing_main_id
-                active_sub_id = existing_sub_id
-                for p in storylines:
-                    if p['id'] == active_main_id:
-                        current_main_name = p['name']
-                        for c in p.get('children', []):
-                            if c['id'] == active_sub_id:
-                                current_sub_name = c['name']
-                                break
-                        break
-            else:
-                # 【情况B：第一次定稿】以前没绑定过，自动抓取全书当前最新的未完结节点
+            # 【新增：计算当前全书最大的章节号，用于判断是否为最新章节】
+            all_chapters = dao.list_chapters(book_name)
+            max_chapter_id = max([c.get('id', 0) for c in all_chapters]) if all_chapters else 0
+            is_latest_chapter = (chapter_id >= max_chapter_id)
+
+            if is_latest_chapter and not is_re_final:
+                # 【情况A：最新章节定稿】直接绑定到当前故事线的最新进度节点上！
                 for p in storylines:
                     if not p.get('is_completed'):
                         active_main_id = p['id']
-                        current_main_name = p['name']
                         for c in p.get('children', []):
                             if not c.get('is_completed'):
                                 active_sub_id = c['id']
-                                current_sub_name = c['name']
+                                break
+                        break
+            else:
+                # 【情况B：不是最新一章 (或手动点击了"重新定稿")】继承它之前的历史节点，覆盖重绑一遍
+                if existing_main_id:
+                    active_main_id = existing_main_id
+                    active_sub_id = existing_sub_id
+                else:
+                    # 极端兜底：如果这章是很久以前的老章节，且居然没有绑定过节点，那就借用上一章的节点
+                    prev_analysis = dao.get_chapter_analysis(book_name, chapter_id - 1)
+                    if prev_analysis and prev_analysis.get("bound_main_node_id"):
+                        active_main_id = prev_analysis.get("bound_main_node_id")
+                        active_sub_id = prev_analysis.get("bound_sub_node_id")
+
+            # 【兜底检查】：如果按上面逻辑没找到（比如全书第一章第一次定稿，前面走进了else），再次抓取一次最新节点
+            if not active_main_id:
+                for p in storylines:
+                    if not p.get('is_completed'):
+                        active_main_id = p['id']
+                        for c in p.get('children', []):
+                            if not c.get('is_completed'):
+                                active_sub_id = c['id']
                                 break
                         break
 
+            # 提取具体的节点名称，用于传给大模型做 Prompt
+            for p in storylines:
+                if p['id'] == active_main_id:
+                    current_main_name = p['name']
+                    for c in p.get('children', []):
+                        if c['id'] == active_sub_id:
+                            current_sub_name = c['name']
+                            break
+                    break
             # 3. 获取宏观金字塔大纲与微观近期细节
             # 此时传入的 active_main_id 已经是准确锁定的节点了，如果是老章节，AI就绝对看不见后面的大纲了！
             macro_storyline = build_macro_storyline(book_name, active_main_id)

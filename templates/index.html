@@ -191,21 +191,59 @@
         /* 新增：当前正在进行中的节点，给一个醒目的蓝色光晕 */
         .tl-dot.active-dot { background: #3b82f6; border-color: #3b82f6; box-shadow: 0 0 0 4px rgba(59,130,246,0.2); z-index: 2; }
 
-        /* ========================================= */
 
-        .ai-sidebar { width: 325px; background: #fff; border-left: 1px solid #e9eef3; display: flex; flex-direction: column; flex-shrink: 0; margin: 8px 8px 8px 0; border-radius: 20px; overflow: hidden; }
+        .ai-sidebar {
+            width: 35vw; /* 按屏幕比例伸缩 */
+            min-width: 400px; /* 保底宽度，比原来的325px大 */
+            max-width: 550px; /* 上限宽度，正好是原来的1.6倍左右 */
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            box-shadow: -4px 0 20px rgba(0,0,0,0.04); /* 增加左侧淡淡的投影，提升层次感 */
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            margin: 8px 12px 8px 0; /* 右侧稍微多留一点空隙 */
+            border-radius: 20px;
+            overflow: hidden;
+            transition: width 0.3s ease;
+        }
         .ai-header { padding: 12px 14px; border-bottom: 1px solid #eef2f6; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
         .ai-messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
         .message { display: flex; flex-direction: column; align-items: flex-start; }
         .message.user { align-items: flex-end; }
         .message.user .message-bubble { background: #3b82f6; color: white; }
-        .message-bubble { padding: 8px 12px; border-radius: 18px; background: #f1f5f9; font-size: 13px; line-height: 1.5; max-width: 85%; }
+        .message-bubble {
+            padding: 10px 14px; /* 上下左右内边距稍微加大，更透气 */
+            border-radius: 18px;
+            background: #f1f5f9;
+            font-size: 14px; /* 字体从13px微微调大，保护眼睛 */
+            line-height: 1.6;
+            max-width: 92%; /* 从85%放宽到92%，充分利用更宽的侧边栏 */
+            box-shadow: 0 1px 2px rgba(0,0,0,0.02); /* 给气泡加点微弱质感 */
+        }
         .ai-input-area { padding: 12px; border-top: 1px solid #eef2f6; background: #fff; }
         .mode-switch { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
         .mode-btn { flex: 1; padding: 6px 0; border-radius: 30px; border: 1px solid #e2e8f0; background: #f8fafc; font-size: 12px; cursor: pointer; text-align: center; }
         .mode-btn.active { background: #3b82f6; color: white; border-color: #3b82f6; }
         .input-wrapper { position: relative; display: flex; align-items: flex-end; gap: 8px; }
-        .ai-textarea { flex: 1; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 20px; outline: none; font-size: 14px; line-height: 1.6; resize: none; overflow-y: auto; transition: max-height 0.2s; min-height: 44px; max-height: 130px; box-sizing: border-box; }
+        .ai-textarea {
+            flex: 1;
+            padding: 12px 14px;
+            border: 1px solid #cbd5e1;
+            border-radius: 20px;
+            outline: none;
+            font-size: 14px;
+            line-height: 1.6;
+            resize: none;
+            overflow-y: auto;
+            transition: max-height 0.2s, border-color 0.2s;
+            min-height: 54px; /* 初始高度从44px提升到54px */
+            max-height: 150px;
+            box-sizing: border-box;
+        }
+        .ai-textarea:focus {
+            border-color: #3b82f6; /* 输入时边框变蓝反馈 */
+        }
         .ai-textarea.expanded { max-height: 400px !important; }
         .send-btn { background: #3b82f6; border: none; color: white; border-radius: 30px; padding: 0 16px; height: 38px; cursor: pointer; font-size: 13px; white-space: nowrap; margin-bottom: 3px; }
 
@@ -942,9 +980,87 @@
       const aiInputExpanded = ref(false);
       const aiTextareaRef = ref(null);
 
+
+      // ========== 全局提示词预览弹窗 ==========
+      const promptPreviewModal = reactive({ visible: false, content: '' });
+
+      function copyPrompt() {
+          navigator.clipboard.writeText(promptPreviewModal.content).then(() => {
+              showToast('提示词已复制到剪贴板！', 'success');
+              promptPreviewModal.visible = false;
+          }).catch(() => showToast('复制失败，请手动复制', 'error'));
+      }
+
+      // ========== 角色/势力塑造模块 ==========
+      const shapeConfig = reactive({
+          target: '【创建】全新角色',
+          refs: [] // 选中的参考实体列表
+      });
+
+      function toggleShapeRef(name) {
+          const idx = shapeConfig.refs.indexOf(name);
+          if (idx > -1) shapeConfig.refs.splice(idx, 1);
+          else shapeConfig.refs.push(name);
+      }
+
+      // 发送塑造请求 (兼顾真实发送和预览拦截)
+      async function triggerEntityShape(isPreview = false) {
+          const msg = aiInput.value.trim();
+          if (!msg) return showToast('请输入您的塑造/补全诉求', 'error');
+          if (!currentBook.value) return showToast('请先选择书籍', 'error');
+
+          const payload = {
+              book_name: currentBook.value,
+              target_desc: shapeConfig.target,
+              ref_desc: shapeConfig.refs.length > 0 ? shapeConfig.refs.join('、') : '无参考实体',
+              user_prompt: msg,
+              preview_only: isPreview
+          };
+
+          if (isPreview) {
+              showToast('⏳ 正在为您组装终极提示词...', 'success');
+          } else {
+              aiInput.value = ''; // 清空输入框
+              aiMessages.value.push({ role: 'user', content: msg });
+              aiMessages.value.push({ id: 'shape_loading', role: 'assistant', type: 'loading', content: '⏳ 正在全览世界观并构思设定，请稍候...' });
+              nextTick(adjustAiTextareaHeight);
+          }
+
+          try {
+              const res = await apiFetch(`${API_BASE}/ai/entity_shape`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(payload)
+              });
+
+              if (isPreview && res.status === 'preview') {
+                  promptPreviewModal.content = res.prompt;
+                  promptPreviewModal.visible = true;
+              } else if (!isPreview && res.status === 'success') {
+                  // 移除 loading 消息
+                  aiMessages.value = aiMessages.value.filter(m => m.id !== 'shape_loading');
+                  // 插入生成结果
+                  aiMessages.value.push({ role: 'assistant', content: res.content });
+              }
+          } catch (e) {
+              showToast('生成失败: ' + e.message, 'error');
+              if (!isPreview) aiMessages.value = aiMessages.value.filter(m => m.id !== 'shape_loading');
+          }
+      }
+
+      // 劫持原有的 sendAiMessage 方法
+      const originalSendAiMessage = sendAiMessage;
+      sendAiMessage = async function() {
+          if (aiMode.value === 'shape') {
+              await triggerEntityShape(false);
+          } else {
+              await originalSendAiMessage();
+          }
+      }
+
       const editorTitle = ref('');
       const editorContent = ref('');
-      const charForm = reactive({ name: '', importance_level: 1, change_log: '', relationships: '', profile: '' });
+      const charForm = reactive({ name: '', importance_level: 1, personal_info: '', change_log: '', relationships: '', profile: '' });
       const foreshadowForm = reactive({ name: '', planted_chapter: 1, content: '', revealed_chapter: null, status: '埋设中' });
       const memoryPackForm = reactive({ start_chapter_id: 1, end_chapter_id: 1, title: '', content: '' });
 
@@ -1031,6 +1147,47 @@
       async function loadStorylines() { if (!currentBook.value) return; try { storylineNodes.value = await apiFetch(`${API_BASE}/books/${currentBook.value}/storylines`); } catch (e) {} }
       async function saveStorylinesTree() { if (!currentBook.value) return; try { await apiFetch(`${API_BASE}/books/${currentBook.value}/storylines`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({nodes: storylineNodes.value}) }); showToast('故事线已保存', 'success'); } catch (e) { showToast('保存失败: ' + e.message, 'error'); } }
 
+      // AI 故事线节点总结
+      const isSummarizing = ref(false); // 总结过程的 Loading 状态
+
+      async function generateStorylineSummary(isPreview = false) {
+            if (!currentBook.value || !editingStorylineNode.value) return;
+
+            isSummarizing.value = true;
+
+            // 1. 优化一下提示语，区分是真总结还是只预览
+            if (isPreview) {
+                showToast('⏳ 正在为您组装故事线提示词...', 'success');
+            } else {
+                showToast('🧠 AI正在阅读本节点章节并梳理脉络，请稍候...', 'success');
+            }
+
+            try {
+                const res = await apiFetch(`${API_BASE}/books/${currentBook.value}/storylines/summarize/${editingStorylineNode.value.id}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preview_only: isPreview })
+                });
+
+                // 2. 新增：如果是预览模式，直接呼出我们早就写好的全局预览弹窗！
+                if (isPreview && res.status === 'preview') {
+                    promptPreviewModal.content = res.prompt;
+                    promptPreviewModal.visible = true;
+                }
+                // 3. 原有逻辑：如果是正常的总结生成
+                else if (!isPreview && res.status === 'success') {
+                    editingStorylineNode.value.content = res.summary;
+                    showToast('✨ 节点总结已生成！', 'success');
+                    await saveStorylinesTree();
+                    triggerAutoResize();
+                }
+            } catch (e) {
+                showToast('总结失败: ' + e.message, 'error');
+            } finally {
+                isSummarizing.value = false;
+            }
+      }
+
       function isLastNode(nodeId) { const flat = []; storylineNodes.value.forEach(p => { flat.push(p); if(p.children) flat.push(...p.children); }); return flat.length > 0 && flat[flat.length - 1].id === nodeId; }
       function isTailCompleted(nodeId) { const flat = []; storylineNodes.value.forEach(p => { flat.push(p); if(p.children) flat.push(...p.children); }); const idx = flat.findIndex(x => x.id === nodeId); if (idx >= 0 && idx < flat.length - 1) return flat[idx + 1].is_completed; return false; }
       function editStorylineNode(node) { editingStorylineNode.value = node; editingMeta.value = { type: 'storyline' }; editMode.value = 'meta'; triggerAutoResize(); }
@@ -1116,11 +1273,74 @@
       function fieldLabel(f) { return { summary:'摘要', key_events:'事实', story_position:'故事进度', emotion_intensity:'情感强度', involved_characters:'角色' }[f] || f; }
       function addKeyEvent(chapterId) { const events = getAnalysis(chapterId).key_events || []; events.push(''); openEditModal(chapterId, 'key_events', events); }
 
-      function editMeta(meta) { editingMeta.value = meta ? { ...meta } : { key: '', value: '' }; editorTitle.value = editingMeta.value.key; editorContent.value = editingMeta.value.value; editMode.value = 'meta'; }
-      async function saveMeta() { if (!editingMeta.value) return; const newKey = editorTitle.value.trim(); const newValue = editorContent.value; if (!newKey) { showToast('条目名称不能为空', 'error'); return; } if (editingMeta.value.key === '简介') { try { await apiFetch(`${API_BASE}/books/${currentBook.value}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ description: newValue }) }); bookDetails.value.description = newValue; editingMeta.value = { key: '简介', value: newValue }; await loadBookDetails(); showToast('简介已更新', 'success'); } catch (e) { showToast('保存失败: ' + e.message, 'error'); } return; } const oldKey = editingMeta.value.key; let list = metaList.value.filter(m => m.key !== oldKey); list.push({ key: newKey, value: newValue }); try { await apiFetch(`${API_BASE}/books/${currentBook.value}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meta_list: list }) }); bookDetails.value.meta_list = list; editingMeta.value = { key: newKey, value: newValue }; await loadBookDetails(); showToast('保存成功', 'success'); } catch (e) { showToast('保存失败: ' + e.message, 'error'); } }
+      function editMeta(meta) {
+          // 增加 enabled 默认属性的继承
+          editingMeta.value = meta ? { ...meta, enabled: meta.enabled !== false } : { key: '', value: '', enabled: true };
+          editorTitle.value = editingMeta.value.key;
+          editorContent.value = editingMeta.value.value;
+          editMode.value = 'meta';
+      }
+      async function saveMeta() {
+          if (!editingMeta.value) return;
+          const newKey = editorTitle.value.trim(); const newValue = editorContent.value;
+          if (!newKey) { showToast('条目名称不能为空', 'error'); return; }
+          if (editingMeta.value.key === '简介') {
+            try {
+                  await apiFetch(`${API_BASE}/books/${currentBook.value}`, {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ description: newValue })
+                  });
+                  bookDetails.value.description = newValue;
+                  editingMeta.value = { key: '简介', value: newValue };
+                  await loadBookDetails();
+                  showToast('简介已更新', 'success');
+              } catch (e) {
+                  showToast('保存失败: ' + e.message, 'error');
+              }
+              return;
+          }
+
+          // 【修改】：保存时携带状态
+          const oldKey = editingMeta.value.key;
+          const isEnabled = editingMeta.value.enabled !== false;
+          let list = metaList.value.filter(m => m.key !== oldKey);
+          list.push({ key: newKey, value: newValue, enabled: isEnabled });
+
+          try {
+              await apiFetch(`${API_BASE}/books/${currentBook.value}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meta_list: list }) });
+              bookDetails.value.meta_list = list;
+              editingMeta.value = { key: newKey, value: newValue, enabled: isEnabled };
+              await loadBookDetails(); showToast('保存成功', 'success');
+          } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+      }
       function cancelEditMeta() { editMode.value = 'chapter'; editingMeta.value = null; updateEditorFromChapter(); }
       async function deleteMeta(key) { const list = metaList.value.filter(m => m.key !== key); bookDetails.value.meta_list = list; await apiFetch(`${API_BASE}/books/${currentBook.value}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meta_list: list }) }); await loadBookDetails(); showToast('已删除', 'success'); deletingItemId.value = null; }
-      async function addNewMeta() { const newKey = `新条目${metaList.value.length+1}`; const list = [...metaList.value, { key: newKey, value: '' }]; bookDetails.value.meta_list = list; await apiFetch(`${API_BASE}/books/${currentBook.value}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meta_list: list }) }); await loadBookDetails(); editMeta({ key: newKey, value: '' }); }
+      async function addNewMeta() {
+          const newKey = `新条目${metaList.value.length+1}`;
+          // 【修改】：新增时默认 enabled: true
+          const list = [...metaList.value, { key: newKey, value: '', enabled: true }];
+          bookDetails.value.meta_list = list;
+          await apiFetch(`${API_BASE}/books/${currentBook.value}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meta_list: list }) });
+          await loadBookDetails();
+          editMeta({ key: newKey, value: '', enabled: true });
+      }
+      async function toggleMetaEnabled(meta) {
+          meta.enabled = meta.enabled === false ? true : false;
+          const list = [...metaList.value];
+          bookDetails.value.meta_list = list;
+          try {
+              await apiFetch(`${API_BASE}/books/${currentBook.value}`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ meta_list: list })
+              });
+              showToast(meta.enabled ? `✅ 已启用【${meta.key}】` : `🚫 已停用【${meta.key}】`, 'success');
+          } catch (e) {
+              meta.enabled = !meta.enabled; // 如果失败则回滚状态
+              showToast('操作失败: ' + e.message, 'error');
+          }
+      }
 
       async function loadForeshadows() { if (!currentBook.value) return; try { foreshadowsList.value = await apiFetch(`${API_BASE}/books/${currentBook.value}/foreshadows`); } catch (e) {} }
       function newForeshadow() { foreshadowForm.name = ''; foreshadowForm.planted_chapter = 1; foreshadowForm.content = ''; foreshadowForm.revealed_chapter = null; foreshadowForm.status = '埋设中'; editingMeta.value = { type: 'foreshadow' }; editMode.value = 'meta'; }
@@ -1136,11 +1356,21 @@
 
       async function loadCharacters() { if (!currentBook.value) return; try { charactersList.value = await apiFetch(`${API_BASE}/books/${currentBook.value}/characters`); } catch (e) {} }
       const sortedCharacters = computed(() => [...charactersList.value].sort((a,b) => (b.importance_level||0) - (a.importance_level||0)));
-      function newCharacter() { editingCharacter.value = null; charForm.name = ''; charForm.importance_level = 1; charForm.change_log = ''; charForm.relationships = ''; charForm.profile = ''; editMode.value = 'character'; }
+      function newCharacter() {
+          editingCharacter.value = null;
+          charForm.name = '';
+          charForm.importance_level = 1;
+          charForm.personal_info = ''; // 【新增】
+          charForm.change_log = '';
+          charForm.relationships = '';
+          charForm.profile = '';
+          editMode.value = 'character';
+      }
       function editCharacter(char) {
         editingCharacter.value = { ...char };
         charForm.name = char.character_name;
         charForm.importance_level = char.importance_level || 1;
+        charForm.personal_info = char.personal_info || ''; // 【新增】回显数据
         charForm.change_log = char.change_log || '';
 
         // 解析关系网对象为多行文本
@@ -1178,8 +1408,9 @@
 
           const payload = {
               importance_level: charForm.importance_level,
+              personal_info: charForm.personal_info, // 【新增】发给后端
               change_log: charForm.change_log,
-              relationships: relArray, // 使用重新组装的对象数组
+              relationships: relArray,
               profile: charForm.profile
           };
 
@@ -1389,6 +1620,8 @@
         formatMetaKey, openVectorSearchModal, testVectorSearch,
         toggleAllFilters,
 
+        // ================= 世界条目启用 =================
+        toggleMetaEnabled,
 
         // 新增的绑定故事线相关变量和方法
         slBindModal, openStorylineBindModal, saveStorylineBind,
@@ -1396,6 +1629,10 @@
         // 章节生成
         allVectorTags, tagsModalVisible, openTagsModal, quickAddTag,
         genModal, openGenModal, addTagInput, removeTagInput, queryGenVectors, toggleSnippetExclude, confirmGenerateChapter,viewDebug,
+
+        // 角色势力生成
+        promptPreviewModal, copyPrompt,
+        shapeConfig, toggleShapeRef, triggerEntityShape,
 
         // 自定义书籍选择器
         showBookDropdown, selectBook,
@@ -1440,7 +1677,8 @@
 
         // 故事线操作
         isTailCompleted, isLastNode, editStorylineNode, addParentStoryline, addChildStoryline,
-        deleteStorylineNode, updateStorylineProgress, saveStorylinesTree,
+        deleteStorylineNode, updateStorylineProgress, saveStorylinesTree,isSummarizing, generateStorylineSummary,
+
 
         // 角色操作
         newCharacter, editCharacter, saveCharacter, deleteCharacter, cancelEditCharacter,
@@ -1556,20 +1794,26 @@
               <div class="kb-tab" :class="{ active: kbActiveTab === 'storyline' }" @click="kbActiveTab = 'storyline'">故事线</div>
               <div class="kb-tab" :class="{ active: kbActiveTab === 'vector' }" @click="kbActiveTab = 'vector'">向量数据</div>
               <div class="kb-tab" :class="{ active: kbActiveTab === 'foreshadow' }" @click="kbActiveTab = 'foreshadow'">伏笔信息</div>
-              <div class="kb-tab" :class="{ active: kbActiveTab === 'memory' }" @click="kbActiveTab = 'memory'">记忆包</div>
+              <!--<div class="kb-tab" :class="{ active: kbActiveTab === 'memory' }" @click="kbActiveTab = 'memory'">记忆包</div>-->
             </div>
             <div class="panel-content">
               <template v-if="kbActiveTab === 'book'">
                 <div class="kb-item fixed-kb-item" @click="editMode='meta'; editingMeta={key:'简介',value:bookDetails.description||''}; editorTitle='简介'; editorContent=bookDetails.description||''">
                   <span class="kb-item-key">简介</span><span style="margin-left:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">[[ bookDetails.description || '暂无' ]]</span>
                 </div>
-                <div v-for="meta in metaList" :key="meta.key" class="kb-item" @click="editMeta(meta)">
-                  <span class="kb-item-key">[[ meta.key ]]</span>
-                  <div v-if="deletingItemId?.type === 'meta' && deletingItemId.key === meta.key" class="delete-confirm">
-                    <button class="confirm-yes" @click.stop="confirmDelete('meta', meta.key)">删除</button>
-                    <button class="confirm-no" @click.stop="cancelDelete">取消</button>
-                  </div>
-                  <span v-else class="kb-item-delete" @click.stop="startDelete('meta', meta.key)">✕</span>
+                <div v-for="meta in metaList" :key="meta.key" class="kb-item" :style="meta.enabled === false ? 'opacity: 0.6; background: #f8fafc;' : ''" @click="editMeta(meta)">
+                    <span @click.stop="toggleMetaEnabled(meta)"
+                          :title="meta.enabled === false ? '点击启用该设定' : '点击停用该设定，AI将不再感知此条目'"
+                          style="margin-right:8px; font-size:14px; cursor:pointer; padding:2px; border-radius:4px; transition:0.2s;"
+                          :style="meta.enabled === false ? 'filter: grayscale(100%);' : ''">
+                        [[ meta.enabled === false ? '⛔' : '✅' ]]
+                    </span>
+                    <span class="kb-item-key" :style="meta.enabled === false ? 'text-decoration: line-through; color: #94a3b8;' : ''">[[ meta.key ]]</span>
+                    <div v-if="deletingItemId?.type === 'meta' && deletingItemId.key === meta.key" class="delete-confirm">
+                      <button class="confirm-yes" @click.stop="confirmDelete('meta', meta.key)">删除</button>
+                      <button class="confirm-no" @click.stop="cancelDelete">取消</button>
+                    </div>
+                    <span v-else class="kb-item-delete" @click.stop="startDelete('meta', meta.key)">✕</span>
                 </div>
                 <div v-if="!metaList.length" style="padding:12px;color:#94a3b8;text-align:center;">暂无条目</div>
               </template>
@@ -1829,7 +2073,18 @@
 
                   <template v-else-if="editMode === 'meta' && editingMeta?.type === 'storyline'">
                       <div class="editor-field"><label>节点名称</label><input v-model="editingStorylineNode.name" placeholder="例如: 拍卖会风波"></div>
-                      <div class="editor-field"><label>节点内容</label><textarea v-model="editingStorylineNode.content" @input="autoResizeTextarea" placeholder="描述此节点的故事发展..."></textarea></div>
+                      <div class="editor-field">
+                          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                              <label style="margin:0;">节点内容 (故事脉络)</label>
+                              <button class="modal-btn" style="background:#8b5cf6; color:white; padding:4px 10px; font-size:12px; border-radius:12px;"
+                                      @click="generateStorylineSummary"
+                                      :disabled="isSummarizing">
+                                  [[ isSummarizing ? '⏳ 大脑高速运转中...' : '✨ AI 智能总结本节点' ]]
+                              </button>
+                              <button class="modal-btn secondary" style="font-size:11px; padding:4px 8px; height:24px;" @click="generateStorylineSummary(true)">👁️ 预览提示词</button>
+                          </div>
+                          <textarea v-model="editingStorylineNode.content" @input="autoResizeTextarea" placeholder="描述此节点的故事发展..."></textarea>
+                      </div>
 
                       <div class="editor-field">
                           <label>关联伏笔</label>
@@ -1854,6 +2109,10 @@
                   <template v-else-if="editMode === 'character'">
                     <div class="editor-field"><label>姓名</label><input v-model="charForm.name"></div>
                     <div class="editor-field"><label>重要性</label><select v-model="charForm.importance_level"><option v-for="opt in importanceOptions" :value="opt.value">[[ opt.label ]]</option></select></div>
+                    <div class="editor-field">
+                        <label>个人资料</label>
+                        <textarea v-model="charForm.personal_info" @input="autoResizeTextarea" placeholder="基础身份、战力境界、核心身世背景等..."></textarea>
+                    </div>
                     <div class="editor-field"><label>外貌性格</label><textarea v-model="charForm.profile" @input="autoResizeTextarea" placeholder="详细描述..."></textarea></div>
                     <div class="editor-field"><label>弧光变化</label><textarea v-model="charForm.change_log" @input="autoResizeTextarea" placeholder="角色发展记录"></textarea></div>
                     <div class="editor-field"><label>关系网</label><textarea v-model="charForm.relationships" @input="autoResizeTextarea" placeholder="例如: 张三: 朋友, 李四: 导师 (每行一条)"></textarea></div>
@@ -1923,13 +2182,41 @@
               <div class="mode-switch">
                 <div class="mode-btn" :class="{ active: aiMode === 'generate' }" @click="aiMode = 'generate'">章节生成</div>
                 <div class="mode-btn" :class="{ active: aiMode === 'continue' }" @click="aiMode = 'continue'">章节续写</div>
+                <div class="mode-btn" :class="{ active: aiMode === 'shape' }" @click="aiMode = 'shape'">设定塑造</div>
                 <button class="expand-toggle" @click="aiInputExpanded = !aiInputExpanded" :title="aiInputExpanded ? '收起' : '展开'" style="margin-left: auto; background: none; border: none; font-size: 16px; cursor: pointer; color: #64748b; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 20px;">
                   [[ aiInputExpanded ? '▲' : '▼' ]]
                 </button>
               </div>
+              <!-- 实体塑造配置面板 -->
+              <div v-if="aiMode === 'shape'" style="padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 10px;">
+                  <div style="margin-bottom: 8px;">
+                      <label style="font-size: 12px; color: #64748b; font-weight: 600;">🎯 塑造目标</label>
+                      <select v-model="shapeConfig.target" style="width: 100%; padding: 6px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12px; margin-top: 4px; outline: none;">
+                          <option value="【创建】全新角色">✨ 创建全新角色</option>
+                          <option value="【创建】全新势力">✨ 创建全新势力</option>
+                          <optgroup label="修改/补全现有角色">
+                              <option v-for="c in charactersList" :key="'c_'+c.character_name" :value="'【补全角色】' + c.character_name">[[ c.character_name ]]</option>
+                          </optgroup>
+                          <optgroup label="修改/补全现有势力">
+                              <option v-for="f in factionsList" :key="'f_'+f.name" :value="'【补全势力】' + f.name">[[ f.name ]]</option>
+                          </optgroup>
+                      </select>
+                  </div>
+                  <div>
+                      <label style="font-size: 12px; color: #64748b; font-weight: 600;">🔗 参考实体 (多选)</label>
+                      <div class="role-tags" style="max-height: 80px; overflow-y: auto; margin-top: 4px; padding: 2px;">
+                          <span v-for="c in charactersList" :key="'ref_c_'+c.character_name" class="role-tag" :class="{selected: shapeConfig.refs.includes(c.character_name)}" @click="toggleShapeRef(c.character_name)" style="padding: 2px 8px; font-size: 11px;">[[ c.character_name ]]</span>
+                          <span v-for="f in factionsList" :key="'ref_f_'+f.name" class="role-tag" :class="{selected: shapeConfig.refs.includes(f.name)}" @click="toggleShapeRef(f.name)" style="padding: 2px 8px; font-size: 11px;">[[ f.name ]]</span>
+                      </div>
+                  </div>
+              </div>
               <div class="input-wrapper">
                 <textarea ref="aiTextareaRef" v-model="aiInput" class="ai-textarea" :class="{ expanded: aiInputExpanded }" placeholder="输入提示词..." @input="adjustAiTextareaHeight"></textarea>
-                <button class="send-btn" @click="sendAiMessage">发送</button>
+                <div style="display:flex; flex-direction:column; gap:6px;">
+                    <button class="send-btn" @click="sendAiMessage" style="margin: 0; height: 32px;">发送</button>
+                    <!-- 预览提示词按钮 -->
+                    <button v-if="aiMode === 'shape'" class="modal-btn secondary" style="font-size:11px; padding:4px 8px; height:24px; margin:0;" @click="triggerEntityShape(true)">👁️ 预览提示词</button>
+                </div>
               </div>
             </div>
           </div>
@@ -2036,6 +2323,25 @@
                 </div>
             </div>
           </div>
+        </div>
+
+        <!-- 提示词预览全局弹窗 -->
+        <div v-if="promptPreviewModal.visible" class="modal-overlay" @click.self="promptPreviewModal.visible = false" style="z-index: 3000;">
+            <div class="modal" style="width: 800px; max-width: 90vw;">
+                <h3 style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>👁️ 终极提示词预览 (Prompt Preview)</span>
+                    <span class="icon-btn" style="background:#f1f5f9; color:#64748b; font-size:14px;" @click="promptPreviewModal.visible = false">✕</span>
+                </h3>
+                <p style="font-size: 13px; color: #64748b; margin-bottom: 12px;">
+                    系统已为您拼装好当前小说的全维度上下文。您可以点击下方复制按钮，直接去网页版大模型（如 Claude 3.5, ChatGPT）获取最高质量的回答，然后手动粘贴回系统中。
+                </p>
+                <textarea v-model="promptPreviewModal.content" style="width: 100%; height: 450px; font-family: 'Consolas', monospace; font-size: 13px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; resize: none;" readonly></textarea>
+
+                <div class="modal-actions">
+                    <button class="modal-btn secondary" @click="promptPreviewModal.visible = false">关闭</button>
+                    <button class="modal-btn primary" @click="copyPrompt">📋 一键复制并关闭</button>
+                </div>
+            </div>
         </div>
 
         <div v-if="tagsModalVisible" class="modal-overlay" @click.self="tagsModalVisible = false" style="z-index: 1050;">

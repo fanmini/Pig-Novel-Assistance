@@ -32,7 +32,9 @@ def build_global_knowledge(book_name: str) -> str:
     book = dao.get_book(book_name) or {}
     lines = [f"【书籍简介】: {book.get('description', '暂无简介')}"]
     for meta in book.get('meta_list', []):
-        lines.append(f"【{meta.get('key', '未知设定')}】: {meta.get('value', '')}")
+        # 【新增】：判断是否启用，未设置(旧数据)默认视为True启用
+        if meta.get('enabled', True):
+            lines.append(f"【{meta.get('key', '未知设定')}】: {meta.get('value', '')}")
     return "\n".join(lines)
 
 
@@ -74,13 +76,8 @@ def build_macro_storyline(book_name: str, active_main_id: str) -> str:
 
 
 def build_micro_details(book_name: str, current_chapter_id: int, history_limit: int = 10) -> str:
-    """
-    公共基座 3：微观细节 (最近 N 章的具体详情)。
-    完美解决痛点：包含了摘要、事件、情绪，以及最重要的——【伏笔的具体内容】。
-    也同时替代了以前废柴的 prev_summary。
-    """
+    """公共基座 3：微观细节 (最近 N 章的具体详情)。"""
     analyses = dao.list_chapter_analyses(book_name)
-    foreshadows = dao.list_foreshadows(book_name)
 
     # 筛选出最近的 N 章分析记录
     recent_analyses = [an for an in analyses if an.get('chapter_id', 0) < current_chapter_id]
@@ -93,23 +90,39 @@ def build_micro_details(book_name: str, current_chapter_id: int, history_limit: 
     for an in recent_analyses:
         cid = an['chapter_id']
         lines.append(f"【第 {cid} 章】:")
-        lines.append(f"  - 摘要: {an.get('summary', '')}")
-        lines.append(f"  - 情绪值: {an.get('emotion_intensity', 1)}")
-        if an.get('key_events'):
-            lines.append(f"  - 核心事件: {', '.join(an.get('key_events', []))}")
 
-        # 【关键修复】查出在这一章埋设的所有伏笔的具体内容！
-        planted_fs = [f for f in foreshadows if f.get("planted_chapter") == cid]
-        if planted_fs:
-            fs_details = [f"[{f.get('name')}]: {f.get('content')}" for f in planted_fs]
-            lines.append(f"  - 本章埋设伏笔: {' | '.join(fs_details)}")
+        # 针对上一章（前一章）：去摘要，给完整正文
+        if cid == current_chapter_id - 1:
+            events = an.get('key_events', [])
+            if events:
+                lines.append(f"  - 核心事件: {', '.join(events)}")
+            else:
+                lines.append(f"  - 核心事件: 暂无记录")
+
+            # 抓取上一章的完整正文
+            prev_chapter = dao.get_chapter(book_name, cid)
+            if prev_chapter and prev_chapter.get('content', '').strip():
+                lines.append(f"  - 完整正文:\n{prev_chapter.get('content')}\n")
+            else:
+                lines.append("  - 完整正文: (暂无内容)\n")
+
+        # 针对更早的历史章节：给摘要和核心事件
+        else:
+            summary = an.get('summary', '').strip()
+            lines.append(f"  - 摘要: {summary if summary else '暂无摘要'}")
+
+            events = an.get('key_events', [])
+            if events:
+                lines.append(f"  - 核心事件: {', '.join(events)}")
+            else:
+                lines.append(f"  - 核心事件: 暂无记录")
 
     return "\n".join(lines)
 
 
 def build_full_lifecycle_entities(book_name: str, char_names: list = None, faction_names: list = None,
                                   max_chapter_id: int = None) -> str:
-    """公共基座 4：出场实体的全生命周期完整档案 (已支持时光倒流，自动剥离未来剧透)"""
+    """公共基座 4：出场实体的全生命周期完整档案"""
     all_chars = dao.list_characters(book_name)
     all_factions = dao.list_factions(book_name)
 
@@ -120,26 +133,31 @@ def build_full_lifecycle_entities(book_name: str, char_names: list = None, facti
     if involved_chars:
         lines.append("【出场角色完整编年史】:")
         for c in involved_chars:
-            # 时光倒流：如果这章之前他还没出场，直接隐身，不给AI投喂
             first_appear = None
             if c.get('arc_history'):
                 first_appear = c['arc_history'][0].get('chapter_id')
             if max_chapter_id and first_appear and first_appear >= max_chapter_id:
                 continue
 
+            # 基础画像兜底
+            profile = c.get('profile', '').strip()
             lines.append(f"  ▶ 角色:【{c['character_name']}】(重要度: {c.get('importance_level', 1)})")
-            lines.append(f"    - 基础画像: {c.get('profile', '暂无')}")
+            lines.append(f"    - 基础画像: {profile if profile else '暂无基础画像'}")
 
+            # 历史演变兜底
             change_log = c.get('change_log', '')
             if max_chapter_id:
                 change_log = _filter_future_logs(change_log, max_chapter_id)
 
-            if change_log:
+            if change_log.strip():
                 lines.append(f"    - 历史演变:\n      {change_log.replace(chr(10), chr(10) + '      ')}")
+            else:
+                lines.append("    - 历史演变: 暂无记录")
 
+            # 核心关系兜底
             rels = c.get('relationships', [])
+            rel_lines = []
             if rels:
-                rel_lines = []
                 for r in rels:
                     target = r.get('target')
                     history = r.get('history', [])
@@ -147,8 +165,11 @@ def build_full_lifecycle_entities(book_name: str, char_names: list = None, facti
                         history = _filter_future_list(history, max_chapter_id)
                     if history:
                         rel_lines.append(f"{target}: {history[-1]}")
-                if rel_lines:
-                    lines.append(f"    - 核心关系:\n      " + "\n      ".join(rel_lines))
+
+            if rel_lines:
+                lines.append(f"    - 核心关系:\n      " + "\n      ".join(rel_lines))
+            else:
+                lines.append("    - 核心关系: 暂无记录")
 
     if involved_factions:
         lines.append("【出场势力完整编年史】:")
@@ -158,11 +179,16 @@ def build_full_lifecycle_entities(book_name: str, char_names: list = None, facti
                 history_log = _filter_future_list(history_log, max_chapter_id)
 
             if max_chapter_id and not history_log and f.get('history_log'):
-                continue  # 时光倒流：此时势力尚未暴露
+                continue
 
+            desc = f.get('description', '').strip()
             lines.append(f"  ▶ 势力:【{f['name']}】")
-            lines.append(f"    - 宗旨底色: {f.get('description', '暂无')}")
+            lines.append(f"    - 宗旨底色: {desc if desc else '暂无说明'}")
+
+            # 势力动态兜底
             if history_log:
                 lines.append(f"    - 势力动态:\n      " + "\n      ".join(history_log))
+            else:
+                lines.append("    - 势力动态: 暂无记录")
 
     return "\n".join(lines) if lines else "未提供或未检索到相关实体档案。"
