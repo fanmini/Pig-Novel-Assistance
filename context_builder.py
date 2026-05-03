@@ -139,10 +139,15 @@ def build_full_lifecycle_entities(book_name: str, char_names: list = None, facti
             if max_chapter_id and first_appear and first_appear >= max_chapter_id:
                 continue
 
+
             # 基础画像兜底
             profile = c.get('profile', '').strip()
             lines.append(f"  ▶ 角色:【{c['character_name']}】(重要度: {c.get('importance_level', 1)})")
             lines.append(f"    - 基础画像: {profile if profile else '暂无基础画像'}")
+
+            # 个人信息
+            personal_info = c.get('personal_info', '').strip()
+            lines.append(f"    - 个人信息: {personal_info if personal_info else '暂无个人信息'}")
 
             # 历史演变兜底
             change_log = c.get('change_log', '')
