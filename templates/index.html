@@ -704,6 +704,61 @@
       const foreshadowsList = ref([]);
       const memoryPacksList = ref([]);
 
+
+      // 1. 定义数据状态
+      const promptsList = ref([]);
+      const editingPrompt = ref(null);
+      const promptActiveTab = ref('system'); // 默认选中系统提示词
+      const filteredPrompts = computed(() => {
+          return promptsList.value.filter(p => p.role === promptActiveTab.value);
+      });
+      // 2. 加载数据的方法
+      async function loadPrompts() {
+            try {
+                const res = await apiFetch(`${API_BASE}/prompts`);
+                promptsList.value = res || []; // 兜底保护，如果后端没东西就给个空数组
+            } catch (e) {
+                showToast('加载提示词失败: ' + e.message, 'error');
+            }
+      }
+
+      // 3. 点击列表编辑的方法
+      function editPrompt(p) {
+          // 深拷贝一下，避免还没点保存就改变了左侧列表的内容
+          editingPrompt.value = JSON.parse(JSON.stringify(p));
+          editMode.value = 'prompt';
+          triggerAutoResize(); // 撑开 textarea
+      }
+
+      // 4. 取消和保存的方法
+      function cancelEditPrompt() {
+          editMode.value = 'chapter';
+          editingPrompt.value = null;
+          updateEditorFromChapter();
+      }
+
+      async function savePrompt() {
+          if (!editingPrompt.value) return;
+          try {
+              // 后端接口接收的是列表，我们把修改后的这一项包装成列表发过去
+              await apiFetch(`${API_BASE}/prompts`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify([editingPrompt.value])
+              });
+              showToast('提示词保存成功，即刻生效！', 'success');
+              await loadPrompts(); // 重新拉取列表，刷新 UI
+          } catch (e) {
+              showToast('提示词保存失败: ' + e.message, 'error');
+          }
+      }
+
+      // 5. 让面板切换时自动加载数据
+      watch(activePanel, async (p) => {
+          // ... 原本的代码
+          if (p === 'prompts') { await loadPrompts(); }
+      });
+
       const roleActiveTab = ref('characters');
 
       // ================= 向量数据可视化与沙盒 =================
@@ -976,7 +1031,7 @@
 
       const aiMessages = ref([{ role: 'assistant', content: '你好！我是你的写作AI～' }]);
       const aiInput = ref('');
-      const aiMode = ref('generate');
+      const aiMode = ref('chat');
       const aiInputExpanded = ref(false);
       const aiTextareaRef = ref(null);
 
@@ -1051,9 +1106,21 @@
       // 劫持原有的 sendAiMessage 方法
       const originalSendAiMessage = sendAiMessage;
       sendAiMessage = async function() {
-          if (aiMode.value === 'shape') {
+          const msg = aiInput.value.trim();
+          if (!msg) return;
+
+          if (aiMode.value === 'chat') {
+              // 👉 1. 自由聊天模式
+              aiInput.value = ''; // 清空输入框
+              aiMessages.value.push({ role: 'user', content: msg, type: 'normal' });
+              await triggerNormalChat(msg);
+
+          } else if (aiMode.value === 'shape') {
+              // 👉 2. 设定塑造模式
               await triggerEntityShape(false);
+
           } else {
+              // 👉 3. 章节生成 / 续写模式
               await originalSendAiMessage();
           }
       }
@@ -1564,6 +1631,84 @@
           isTestingConnection.value = false;
         }
       }
+
+      async function triggerNormalChat(msg) {
+          // 1. 提取纯净的历史记录
+          const history = aiMessages.value
+              .filter(m => !m.type || m.type === 'normal')
+              .map(m => ({ role: m.role, content: m.content }));
+
+          // 👉 核心新增：从提示词管理器中动态抓取自定义的“系统设定”和“助手预设”
+          const sysPrompt = promptsList.value.find(p => p.name === 'PROMPT_CHAT_SYSTEM')?.content || '你是一个人工智能助手';
+          const astPrompt = promptsList.value.find(p => p.name === 'PROMPT_CHAT_ASSISTANT')?.content || '你好！我是你的写作军师。';
+
+          // 👉 核心新增：把它们强行塞到历史记录的【最开头】
+          history.unshift(
+              { role: 'system', content: sysPrompt },
+              { role: 'assistant', content: astPrompt }
+          );
+
+          // 2. 推入一个空的 AI 气泡，准备接收流式打字
+          const targetMsg = reactive({ role: 'assistant', content: '', type: 'normal' });
+          aiMessages.value.push(targetMsg);
+          nextTick(adjustAiTextareaHeight);
+
+          // 3. 准备后端需要的完整 Payload
+          const payload = {
+              messages: history,
+              model: aiConfig.model,
+              temperature: aiConfig.temperature,
+              max_tokens: aiConfig.max_tokens,
+              top_p: aiConfig.top_p,
+              api_key: aiConfig.api_key
+          };
+
+          try {
+              const res = await fetch(`${API_BASE}/ai/chat/stream`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(payload)
+              });
+
+              const reader = res.body.getReader();
+              const decoder = new TextDecoder();
+              let buffer = '';
+
+              while(true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  buffer += decoder.decode(value, {stream: true});
+                  const lines = buffer.split('\n');
+                  buffer = lines.pop() || '';
+
+                  for (const line of lines) {
+                      if (line.startsWith('data: ')) {
+                          const data = line.slice(6);
+                          if (data === '[DONE]') return;
+
+                          try {
+                              const parsed = JSON.parse(data);
+                              if (parsed.error) {
+                                  showToast('聊天出错: ' + parsed.error, 'error');
+                                  return;
+                              }
+                              if (parsed.content) {
+                                  // 核心：把接收到的字追加到气泡中
+                                  targetMsg.content += parsed.content;
+
+                                  // 自动往下滚动
+                                  const container = document.querySelector('.ai-messages');
+                                  if(container) container.scrollTop = container.scrollHeight;
+                              }
+                          } catch(e) {}
+                      }
+                  }
+              }
+          } catch(e) {
+              showToast('网络请求中断', 'error');
+          }
+      }
+
       async function sendAiMessage() {
           const msg = aiInput.value.trim();
           if (!msg) return;
@@ -1752,6 +1897,10 @@
         // 通用及其他
         manualSave, sendAiMessage, metaList, startDelete, cancelDelete, confirmDelete,
         autoResizeTextarea, toggleSaveDropdown, handleSave,
+
+        // 提示词管理
+        promptsList, editingPrompt, loadPrompts, editPrompt, cancelEditPrompt, savePrompt,promptActiveTab, filteredPrompts,
+
         importanceOptions: [{ value: 1, label: '龙套' }, { value: 2, label: '配角' }, { value: 3, label: '核心' }]
       };
     },
@@ -1813,8 +1962,13 @@
             <div class="activity-icon" :class="{ active: activePanel === 'knowledge' }" @click="activePanel = 'knowledge'"><span>📖</span><span>知识库</span></div>
             <div class="activity-icon" :class="{ active: activePanel === 'characters' }" @click="activePanel = 'characters'"><span>👥</span><span>角色</span></div>
             <div class="activity-icon" :class="{ active: activePanel === 'ai' }" @click="activePanel = 'ai'"><span>🤖</span><span>AI</span></div>
+            <div class="activity-icon" :class="{ active: activePanel === 'prompts' }" @click="activePanel = 'prompts'">
+                <span>📝</span><span>提示词</span>
+            </div>
             <div class="activity-icon"><span>⚙️</span><span>设置</span></div>
           </div>
+
+
 
           <div class="sidebar-panel" v-show="activePanel === 'chapters'">
             <div class="panel-header"><span>📑 章节列表</span><div class="panel-header-actions"><span class="icon-btn" @click="loadChapters">🔄</span><span class="icon-btn" @click="createChapter">➕</span></div></div>
@@ -2100,6 +2254,35 @@
             </div>
           </div>
 
+          <div class="sidebar-panel" v-show="activePanel === 'prompts'">
+                <div class="panel-header" style="flex-direction: column; align-items: stretch; padding: 0;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid #e2e8f0;">
+                        <span>📝 提示词管理</span>
+                        <div class="panel-header-actions">
+                            <span class="icon-btn" @click="loadPrompts">🔄</span>
+                        </div>
+                    </div>
+                    <!-- 👇 这里是新增的 Tab 切换栏 👇 -->
+                    <div class="kb-tabs" style="border-bottom: none;">
+                        <div class="kb-tab" :class="{active: promptActiveTab === 'system'}" @click="promptActiveTab = 'system'">⚙️ 系统 (System)</div>
+                        <div class="kb-tab" :class="{active: promptActiveTab === 'user'}" @click="promptActiveTab = 'user'">👤 用户 (User)</div>
+                    </div>
+                </div>
+
+                <div class="panel-content">
+                    <!-- 👇 注意这里改成了 filteredPrompts 👇 -->
+                    <div v-for="p in filteredPrompts" :key="p.name" class="character-card" @click="editPrompt(p)">
+                        <div class="character-info">
+                            <div class="character-name" style="font-size: 14px;">[[ p.alias ]]</div>
+                            <div style="font-size: 11px; color: #64748b; margin-top: 6px; word-break: break-all;">
+                                [[ p.name ]]
+                            </div>
+                        </div>
+                    </div>
+                    <div v-if="!filteredPrompts?.length" style="padding:12px;color:#94a3b8;text-align:center;">该分类下暂无提示词</div>
+                </div>
+          </div>
+
           <div class="main-editor">
             <div v-if="editMode === 'chapter'" class="editor-full">
               <div class="editor-container">
@@ -2127,6 +2310,7 @@
                   <span v-else-if="editMode === 'meta' && editingMeta?.type === 'storyline'">🗺️ 故事线节点</span>
                   <span v-else-if="editMode === 'character'">🧑 编辑角色</span>
                   <span v-else-if="editMode === 'faction'">🏛️ 编辑势力</span>
+                  <span v-else-if="editMode === 'prompt'">📝 编辑提示词 (Prompt)</span>
                 </div>
                 <div class="editor-body">
                   <template v-if="editMode === 'meta' && !editingMeta?.type">
@@ -2213,6 +2397,34 @@
                     </div>
                   </template>
 
+                  <template v-else-if="editMode === 'prompt'">
+                    <div class="editor-field">
+                        <label>中文别名 (方便你在列表里认出它)</label>
+                        <input v-model="editingPrompt.alias" placeholder="例如: 章节规划生成">
+                    </div>
+                    <div class="editor-field" style="display: flex; gap: 10px;">
+                        <div style="flex: 1;">
+                            <label>身份标识 (底层写死，不可修改)</label>
+                            <input :value="editingPrompt.role" disabled style="background:#f8fafc; color:#94a3b8; cursor:not-allowed;">
+                        </div>
+                        <div style="flex: 1;">
+                            <label>变量名称 (底层写死，不可修改)</label>
+                            <input :value="editingPrompt.name" disabled style="background:#f8fafc; color:#94a3b8; cursor:not-allowed;">
+                        </div>
+                    </div>
+                    <div class="editor-field">
+                        <label>提示词内容模板</label>
+                        <textarea v-model="editingPrompt.content" @input="autoResizeTextarea" placeholder="在这里修改提示词..." style="min-height: 400px; font-family: 'Consolas', monospace; font-size: 13px; line-height: 1.6;"></textarea>
+                        <div style="font-size: 12px; color: #ef4444; margin-top: 8px; font-weight: 500;">
+                            ⚠️ 警告：请勿删除或修改内容中已有的 <code>{xxxx}</code> 英文占位符，否则后台将无法正确填充上下文数据！
+                        </div>
+                    </div>
+                    <div class="editor-actions">
+                        <button class="modal-btn secondary" @click="cancelEditPrompt">取消</button>
+                        <button class="modal-btn primary" @click="savePrompt">💾 保存并生效</button>
+                    </div>
+                  </template>
+
                 </div>
               </div>
             </div>
@@ -2258,6 +2470,7 @@
             </div>
             <div class="ai-input-area">
               <div class="mode-switch">
+                <div class="mode-btn" :class="{ active: aiMode === 'chat' }" @click="aiMode = 'chat'">💬 自由聊天</div>
                 <div class="mode-btn" :class="{ active: aiMode === 'generate' }" @click="aiMode = 'generate'">章节生成</div>
                 <div class="mode-btn" :class="{ active: aiMode === 'continue' }" @click="aiMode = 'continue'">章节续写</div>
                 <div class="mode-btn" :class="{ active: aiMode === 'shape' }" @click="aiMode = 'shape'">设定塑造</div>

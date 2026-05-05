@@ -8,6 +8,7 @@ from finalize_service import run_finalize_pipeline_stream, cleanup_chapter_data
 from ai_handler import ai_handler, load_ai_config, save_ai_config
 from base_dao import NovelModel
 from generate_service import generate_chapter_plan, query_vector_knowledge, generate_chapter_content_stream
+from prompt_manager import prompt_manager
 from storyline_service import generate_storyline_summary
 from vector_dao import vector_dao
 
@@ -509,4 +510,17 @@ def ai_entity_shape():
         return jsonify({"error": f"塑造生成失败: {str(e)}"}), 500
 
 
+# --------- 提示词管理-------------
+@api_bp.route('/prompts', methods=['GET'])
+def get_prompts():
+    """获取所有提示词列表（包含默认与自定义）"""
+    return jsonify(prompt_manager.get_all_prompts())
 
+@api_bp.route('/prompts', methods=['PUT'])
+def update_prompts():
+    """保存前端自定义的提示词"""
+    data = request.json
+    if not isinstance(data, list):
+        return jsonify({"error": "格式错误，期望收到列表"}), 400
+    prompt_manager.save_prompts(data)
+    return jsonify({"status": "success", "message": "提示词保存成功"})
