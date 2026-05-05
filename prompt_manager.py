@@ -53,7 +53,12 @@ class PromptManager:
             for var_name in dir(mod):
                 # 动态捕捉所有以 PROMPT_ 开头的变量
                 if var_name.startswith("PROMPT_") and isinstance(getattr(mod, var_name), str):
-                    role = "system" if "SYSTEM" in var_name else "user"
+                    if "SYSTEM" in var_name:
+                        role = "system"
+                    elif "ASSISTANT" in var_name:
+                        role = "assistant"
+                    else:
+                        role = "user"
                     # 自定义存在就用自定义的，不存在就用默认的
                     content = customs.get(var_name, {}).get("content", getattr(mod, var_name))
                     alias = customs.get(var_name, {}).get("alias", ALIASES.get(var_name, var_name))

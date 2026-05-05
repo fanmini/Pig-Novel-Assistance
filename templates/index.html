@@ -1595,7 +1595,24 @@
 
       async function loadAIModels() { try { aiModels.value = await apiFetch(`${API_BASE}/ai/models`); } catch (e) { showToast('加载模型列表失败', 'error'); } }
       async function loadAIConfig() { try { const config = await apiFetch(`${API_BASE}/ai/config`); aiConfig.model = config.model || aiConfig.model; aiConfig.api_key = config.api_key || ''; aiConfig.temperature = config.temperature ?? 0.7; aiConfig.max_tokens = config.max_tokens ?? 1024; aiConfig.top_p = config.top_p ?? 1.0; } catch (e) { showToast('加载配置失败', 'error'); } }
-      async function saveAIConfig() { try { await apiFetch(`${API_BASE}/ai/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: aiConfig.model, api_key: aiConfig.api_key, temperature: aiConfig.temperature, max_tokens: aiConfig.max_tokens, top_p: aiConfig.top_p }) }); showToast('配置已保存', 'success'); } catch (e) { showToast('保存失败', 'error'); } }
+      async function saveAIConfig() {
+          try {
+              await apiFetch(`${API_BASE}/ai/config`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                      model: aiConfig.model,
+                      api_key: aiConfig.api_key,
+                      temperature: parseFloat(aiConfig.temperature), // 👉 强转为浮点数
+                      max_tokens: parseInt(aiConfig.max_tokens),     // 👉 强转为整数
+                      top_p: parseFloat(aiConfig.top_p)              // 👉 强转为浮点数
+                  })
+              });
+              showToast('配置已保存', 'success');
+          } catch (e) {
+              showToast('保存失败', 'error');
+          }
+      }
       async function testAiConnection() {
         if (isTestingConnection.value) return;
         isTestingConnection.value = true;
@@ -1819,7 +1836,8 @@
       }
 
       loadBooks();
-
+      loadAIModels();
+      loadAIConfig();
       return {
         finalizeSteps,
         showDebugModal,
@@ -2262,15 +2280,14 @@
                             <span class="icon-btn" @click="loadPrompts">🔄</span>
                         </div>
                     </div>
-                    <!-- 👇 这里是新增的 Tab 切换栏 👇 -->
                     <div class="kb-tabs" style="border-bottom: none;">
-                        <div class="kb-tab" :class="{active: promptActiveTab === 'system'}" @click="promptActiveTab = 'system'">⚙️ 系统 (System)</div>
-                        <div class="kb-tab" :class="{active: promptActiveTab === 'user'}" @click="promptActiveTab = 'user'">👤 用户 (User)</div>
+                        <div class="kb-tab" :class="{active: promptActiveTab === 'system'}" @click="promptActiveTab = 'system'">⚙️ 系统</div>
+                        <div class="kb-tab" :class="{active: promptActiveTab === 'user'}" @click="promptActiveTab = 'user'">👤 用户</div>
+                        <div class="kb-tab" :class="{active: promptActiveTab === 'assistant'}" @click="promptActiveTab = 'assistant'">🤖 助手</div>
                     </div>
                 </div>
 
                 <div class="panel-content">
-                    <!-- 👇 注意这里改成了 filteredPrompts 👇 -->
                     <div v-for="p in filteredPrompts" :key="p.name" class="character-card" @click="editPrompt(p)">
                         <div class="character-info">
                             <div class="character-name" style="font-size: 14px;">[[ p.alias ]]</div>

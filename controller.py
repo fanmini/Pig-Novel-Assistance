@@ -310,9 +310,10 @@ def ai_chat():
     data = request.json
     messages = data.get('messages', [])
     model = data.get('model', 'openai/gpt-4o-mini')
-    temperature = data.get('temperature', 0.7)
-    max_tokens = data.get('max_tokens', 1024)
-    top_p = data.get('top_p', 1.0)
+    # 👇 加上强制类型转换 👇
+    temperature = float(data.get('temperature', 0.7))
+    max_tokens = int(data.get('max_tokens', 1024))
+    top_p = float(data.get('top_p', 1.0))
     api_key = data.get('api_key')
     session_id = data.get('session_id', str(uuid.uuid4()))
     try:
@@ -335,9 +336,9 @@ def ai_chat_stream():
     data = request.json
     messages = data.get('messages', [])
     model = data.get('model', 'openai/gpt-4o-mini')
-    temperature = data.get('temperature', 0.7)
-    max_tokens = data.get('max_tokens', 1024)
-    top_p = data.get('top_p', 1.0)
+    temperature = float(data.get('temperature', 0.7))
+    max_tokens = int(data.get('max_tokens', 1024))
+    top_p = float(data.get('top_p', 1.0))
     api_key = data.get('api_key')
     session_id = data.get('session_id', str(uuid.uuid4()))
 
