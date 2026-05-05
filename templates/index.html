@@ -1191,7 +1191,33 @@
       function isLastNode(nodeId) { const flat = []; storylineNodes.value.forEach(p => { flat.push(p); if(p.children) flat.push(...p.children); }); return flat.length > 0 && flat[flat.length - 1].id === nodeId; }
       function isTailCompleted(nodeId) { const flat = []; storylineNodes.value.forEach(p => { flat.push(p); if(p.children) flat.push(...p.children); }); const idx = flat.findIndex(x => x.id === nodeId); if (idx >= 0 && idx < flat.length - 1) return flat[idx + 1].is_completed; return false; }
       function editStorylineNode(node) { editingStorylineNode.value = node; editingMeta.value = { type: 'storyline' }; editMode.value = 'meta'; triggerAutoResize(); }
-      function addParentStoryline() { storylineNodes.value.push({ id: 'p_'+Date.now(), name: '新大节点', content: '', foreshadows: [], is_completed: false, children: [] }); saveStorylinesTree(); }
+      function addParentStoryline() {
+          const newNode = { id: 'p_'+Date.now(), name: '新大节点', content: '', foreshadows: [], is_completed: false, children: [] };
+
+          if (editingStorylineNode.value) {
+              const targetId = editingStorylineNode.value.id;
+              // 判断当前选中的是不是大节点
+              let targetIndex = storylineNodes.value.findIndex(p => p.id === targetId);
+
+              if (targetIndex !== -1) {
+                  // 如果点中的是大节点，就在它下方紧跟着插入
+                  storylineNodes.value.splice(targetIndex + 1, 0, newNode);
+              } else {
+                  // 如果点中的是小节点，就找到它所属的大节点，在大节点下方插入
+                  targetIndex = storylineNodes.value.findIndex(p => p.children && p.children.some(c => c.id === targetId));
+                  if (targetIndex !== -1) {
+                      storylineNodes.value.splice(targetIndex + 1, 0, newNode);
+                  } else {
+                      // 兜底方案
+                      storylineNodes.value.push(newNode);
+                  }
+              }
+          } else {
+              // 没有任何选中项时，默认在末尾追加
+              storylineNodes.value.push(newNode);
+          }
+          saveStorylinesTree();
+      }
       function addChildStoryline(parent) { if (!parent.children) parent.children = []; parent.children.push({ id: 'c_'+Date.now(), name: '新小节点', content: '', foreshadows: [], is_completed: false }); saveStorylinesTree(); }
       function deleteStorylineNode(nodeId, parentId) { if (!confirm('确定删除此节点吗？相关数据将无法恢复。')) return; if (parentId) { const p = storylineNodes.value.find(x => x.id === parentId); if (p) p.children = p.children.filter(x => x.id !== nodeId); } else { storylineNodes.value = storylineNodes.value.filter(x => x.id !== nodeId); } if (editingStorylineNode.value?.id === nodeId) { editMode.value = 'chapter'; editingStorylineNode.value = null; } saveStorylinesTree(); }
       function updateStorylineProgress() {
@@ -1301,11 +1327,17 @@
               return;
           }
 
-          // 【修改】：保存时携带状态
           const oldKey = editingMeta.value.key;
           const isEnabled = editingMeta.value.enabled !== false;
-          let list = metaList.value.filter(m => m.key !== oldKey);
-          list.push({ key: newKey, value: newValue, enabled: isEnabled });
+          let list = [...metaList.value];
+
+          // 【修复】：找到原位置进行替换，而不是删除后再推到末尾
+          const idx = list.findIndex(m => m.key === oldKey);
+          if (idx !== -1) {
+              list[idx] = { key: newKey, value: newValue, enabled: isEnabled };
+          } else {
+              list.push({ key: newKey, value: newValue, enabled: isEnabled });
+          }
 
           try {
               await apiFetch(`${API_BASE}/books/${currentBook.value}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meta_list: list }) });
@@ -1314,6 +1346,40 @@
               await loadBookDetails(); showToast('保存成功', 'success');
           } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
       }
+
+      const draggedMetaIndex = ref(null);
+
+      function handleDragStart(index, event) {
+          draggedMetaIndex.value = index;
+          event.dataTransfer.effectAllowed = 'move';
+      }
+
+      async function handleDrop(targetIndex) {
+          const sourceIndex = draggedMetaIndex.value;
+          if (sourceIndex === null || sourceIndex === targetIndex) return;
+
+          const list = [...metaList.value];
+          // 把元素从原位置拔出来，插到目标位置
+          const [draggedItem] = list.splice(sourceIndex, 1);
+          list.splice(targetIndex, 0, draggedItem);
+
+          bookDetails.value.meta_list = list; // 立即响应到 UI
+          draggedMetaIndex.value = null;      // 拖拽结束
+
+          // 静默保存到后端
+          try {
+              await apiFetch(`${API_BASE}/books/${currentBook.value}`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ meta_list: list })
+              });
+              showToast('排序已保存', 'success');
+          } catch (e) {
+              showToast('排序失败: ' + e.message, 'error');
+              await loadBookDetails(); // 失败则拉取旧数据回滚
+          }
+      }
+
       function cancelEditMeta() { editMode.value = 'chapter'; editingMeta.value = null; updateEditorFromChapter(); }
       async function deleteMeta(key) { const list = metaList.value.filter(m => m.key !== key); bookDetails.value.meta_list = list; await apiFetch(`${API_BASE}/books/${currentBook.value}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meta_list: list }) }); await loadBookDetails(); showToast('已删除', 'success'); deletingItemId.value = null; }
       async function addNewMeta() {
@@ -1669,7 +1735,7 @@
         createBook, deleteBook, loadChapters, createChapter, deleteChapter,
         toggleExpand, getAnalysis, openEditModal, openRoleModal, saveRoleSelection,
         saveAnalysisField, addKeyEvent, fieldLabel,
-        editMeta, saveMeta, cancelEditMeta, deleteMeta, addNewMeta,
+        editMeta, saveMeta, cancelEditMeta, deleteMeta, addNewMeta,handleDragStart, handleDrop, draggedMetaIndex,
 
         // 伏笔、记忆包等增删改查
         loadForeshadows, newForeshadow, editForeshadow, saveForeshadow, deleteForeshadow,
@@ -1801,7 +1867,18 @@
                 <div class="kb-item fixed-kb-item" @click="editMode='meta'; editingMeta={key:'简介',value:bookDetails.description||''}; editorTitle='简介'; editorContent=bookDetails.description||''">
                   <span class="kb-item-key">简介</span><span style="margin-left:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">[[ bookDetails.description || '暂无' ]]</span>
                 </div>
-                <div v-for="meta in metaList" :key="meta.key" class="kb-item" :style="meta.enabled === false ? 'opacity: 0.6; background: #f8fafc;' : ''" @click="editMeta(meta)">
+                <div v-for="(meta, index) in metaList" :key="meta.key" class="kb-item"
+                     :style="(meta.enabled === false ? 'opacity: 0.6; background: #f8fafc;' : '') + (draggedMetaIndex === index ? 'opacity: 0.3; border: 1px dashed #3b82f6;' : '')"
+                     @click="editMeta(meta)"
+                     draggable="true"
+                     @dragstart="handleDragStart(index, $event)"
+                     @dragover.prevent
+                     @dragenter.prevent
+                     @drop="handleDrop(index)">
+
+                    <!-- 优雅的拖拽手柄 -->
+                    <span style="cursor: grab; color: #94a3b8; margin-right: 8px; font-size: 16px; user-select: none;" title="按住拖拽排序">⋮⋮</span>
+
                     <span @click.stop="toggleMetaEnabled(meta)"
                           :title="meta.enabled === false ? '点击启用该设定' : '点击停用该设定，AI将不再感知此条目'"
                           style="margin-right:8px; font-size:14px; cursor:pointer; padding:2px; border-radius:4px; transition:0.2s;"
@@ -1809,6 +1886,7 @@
                         [[ meta.enabled === false ? '⛔' : '✅' ]]
                     </span>
                     <span class="kb-item-key" :style="meta.enabled === false ? 'text-decoration: line-through; color: #94a3b8;' : ''">[[ meta.key ]]</span>
+
                     <div v-if="deletingItemId?.type === 'meta' && deletingItemId.key === meta.key" class="delete-confirm">
                       <button class="confirm-yes" @click.stop="confirmDelete('meta', meta.key)">删除</button>
                       <button class="confirm-no" @click.stop="cancelDelete">取消</button>
