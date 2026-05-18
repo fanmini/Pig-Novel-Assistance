@@ -120,10 +120,33 @@
 
         .main-editor { flex: 1; overflow: hidden; display: flex; align-items: stretch; }
         .editor-full { width: 100%; display: flex; flex-direction: column; background: #fff; border-radius: 0; margin: 0; }
-        .editor-full .editor-container { display: flex; flex-direction: column; height: 100%; padding: 20px 48px; }
-        .editor-full .chapter-title-input { width: 100%; font-size: 28px; font-weight: 700; border: none; outline: none; padding: 12px 0; margin-bottom: 20px; border-bottom: 2px solid #e2e8f0; background: transparent; }
-        .editor-full .chapter-content-textarea { flex: 1; width: 100%; border: none; outline: none; padding: 0; font-size: 17px; line-height: 1.7; font-family: inherit; resize: none; background: transparent; }
+        .editor-full .editor-container {
+            display: flex; flex-direction: column; height: 100%; padding: 20px 48px;
+            align-items: center; /* 关键：让内部元素水平居中 */
+        }
+        .editor-title-wrapper {
+            width: 100%; max-width: 890px;
+            display: flex; align-items: baseline;
+            border-bottom: 2px solid #e2e8f0; margin-bottom: 20px;
+        }
 
+        .editor-full .chapter-title-input {
+            flex: 1; font-size: 28px; font-weight: 700; border: none; outline: none;
+            background: transparent; padding: 12px 0; color: #1e293b;
+        }
+
+        .editor-full .chapter-content-textarea {
+            flex: 1;
+            width: 100%;
+            max-width: 890px;
+            border: none; outline: none; padding: 0;
+            font-size: 20px;
+            line-height: 2.8; /* 增加行距，视觉上更疏朗 */
+            letter-spacing: 1px; /* 增加字间距，不拥挤 */
+            font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
+            text-align: justify; /* 两端对齐，看起来像排版好的书 */
+            resize: none; background: transparent;
+        }
         .editor-card-mode {width: 100%;display: flex;align-items: flex-start;justify-content: center;padding: 20px 40px;}
         .editor-card { width: 100%; max-width: 750px; max-height: 100%; background: #fff; border-radius: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); display: flex; flex-direction: column; overflow: hidden; }
         .editor-card .editor-header { padding: 16px 20px; border-bottom: 1px solid #eef2f6; font-weight: 600; font-size: 16px; color: #1e293b; display: flex; justify-content: space-between; align-items: center; }
@@ -353,17 +376,82 @@
       });
 
       const slBindModal = reactive({ visible: false, chapterId: null, selected: '' });
+      const fsModal = reactive({ visible: false, selected: [], newName: '' });
 
+      const deletingItemId = ref(null);
+      const finalizeSteps = ref([]); // 存储定稿的实时步骤
+      const showDebugModal = ref(false); // 调试大框开关
+
+      const selectedDebug = ref(null); // 当前选中的调试内容
+
+
+
+      const aiModels = ref([]);
+      const aiConfig = reactive({ model: 'openai/gpt-4o-mini', api_key: '', temperature: 0.7, max_tokens: 1024, top_p: 1.0 , refinalize_plot: true, refinalize_entity: true, refinalize_vector: true});
+      const isTestingConnection = ref(false);
+
+      const aiMessages = ref([{ role: 'assistant', content: '你好！我是你的写作军师。双击我的气泡可以修改或删除哦！', type: 'welcome' }]);
+      const aiInput = ref('');
+      const aiMode = ref('chat');
+      const aiInputExpanded = ref(false);
+      const aiTextareaRef = ref(null);
+      const promptPreviewModal = reactive({ visible: false, content: '' });
+      const toasts = ref([]);
+      const aiAbortController = ref(null);
+
+      const books = ref([]);
+      const showBookDropdown = ref(false);
+
+      const currentBook = ref(null);
+      const chapters = ref([]);
+      const currentChapterId = ref(null);
+
+      const isEditingBookName = ref(false);
+      const newBookName = ref('');
+      const activePanel = ref('chapters');
+      const expandedChapters = ref(new Set());
+      const showAiSidebar = ref(true);
+      const showSaveDropdown = ref(false);
+
+      const editMode = ref('chapter');
+      const editingMeta = ref(null);
+      const editingCharacter = ref(null);
+      const kbActiveTab = ref('book');
+
+      const analysisCache = reactive({});
+      const bookDetails = ref({});
+      const charactersList = ref([]);
+      const foreshadowsList = ref([]);
+      const memoryPacksList = ref([]);
+      const promptsList = ref([]);
+      const editingPrompt = ref(null);
+      const promptActiveTab = ref('system'); // 默认选中系统提示词
+      const filteredPrompts = computed(() => {
+          return promptsList.value.filter(p => p.role === promptActiveTab.value);
+      });
+
+
+      function stopAllAiGenerations() {
+          if (aiAbortController.value) {
+              aiAbortController.value.abort(); // 发送物理切断信号
+              aiAbortController.value = null;  // 重置
+
+              // 顺手把界面上转圈圈的状态也重置掉
+              genModal.isGenerating = false;
+              isSummarizing.value = false;
+
+              showToast('⛔ 已向 AI 发出停止指令', 'success');
+          } else {
+              showToast('当前没有正在生成的 AI 任务', 'info');
+          }
+      }
       // 辅助函数：生成完整的 7 维度过滤漏斗，默认 enabled 均为 false (不启用)
       function createDefaultFilters() {
           return {
-              scene_type: { value: '', enabled: false },
-              plot_trope: { value: '', enabled: false },
               characters: { value: '', enabled: false },
               factions: { value: '', enabled: false },
               items: { value: '', enabled: false },
-              locations: { value: '', enabled: false },
-              description_focus: { value: '', enabled: false }
+              locations: { value: '', enabled: false }
           };
       }
 
@@ -417,7 +505,7 @@
           if (!currentBook.value || !currentChapterId.value) return showToast('请先选择书籍和章节', 'error');
 
           const msgId = Date.now();
-          aiMessages.value.push({ id: msgId, role: 'user', content: draft });
+          aiMessages.value.push({ id: msgId, role: 'user', content: draft, type: 'temp' });
           aiMessages.value.push({ id: msgId + 1, role: 'assistant', type: 'loading', content: '⏳ 正在解析您的思路，生成本章大纲与检索词...' });
 
           try {
@@ -579,8 +667,6 @@
       // 4. 终极确认：开始流式生成正文！
       async function confirmGenerateChapter() {
           genModal.visible = false;
-
-          // 1. 收集没有被踢出的历史片段
           const finalSnippets = [];
           genModal.retrieved_results.forEach(group => {
               group.snippets.forEach(s => {
@@ -589,8 +675,6 @@
                   }
               });
           });
-
-          // 2. 准备发送给后端的最终参数
           const payload = {
               book_name: currentBook.value,
               chapter_id: currentChapterId.value,
@@ -599,27 +683,37 @@
               retrieved_snippets: finalSnippets
           };
 
+          const targetChapterId = currentChapterId.value;
+          const targetChapter = chapters.value.find(c => c.id === targetChapterId);
+
+          genModal.isGenerating = true;
           showToast('🚀 正在为您拼字，请留意正文区域...', 'success');
 
-          // 3. 在聊天列表推入一条带有 debug_info 接收能力的卡片
           const msgId = Date.now();
           const genMsg = reactive({
               id: msgId,
               role: 'assistant',
               type: 'generating',
-              content: '⏳ 正在拼字中，请看左侧编辑器...',
-              debug_info: null // 这里准备接收后端隐蔽传过来的 prompt 源码
+              content: '⏳ 准备中...',
+              full_thought: '',
+              debug_info: null
           });
           aiMessages.value.push(genMsg);
+
+          aiAbortController.value = new AbortController();
 
           try {
               const res = await fetch(`${API_BASE}/ai/generate_content/stream`, {
                   method: 'POST', headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(payload)
+                  body: JSON.stringify(payload),
+                  signal: aiAbortController.value.signal
               });
 
-              if (editorContent.value && !editorContent.value.endsWith('\n\n')) {
-                  editorContent.value += '\n\n';
+              if (currentChapterId.value === targetChapterId && editorContent.value && !editorContent.value.endsWith('\n\n')) {
+                  editorContent.value += '\n';
+              }
+              if (targetChapter && targetChapter.content && !targetChapter.content.endsWith('\n\n')) {
+                  targetChapter.content += '\n';
               }
 
               const reader = res.body.getReader();
@@ -636,87 +730,150 @@
                   for (const line of lines) {
                       if (line.startsWith('data: ')) {
                           const data = line.slice(6);
+
+                          // =================== 生成结束的处理 ===================
                           if (data === '[DONE]') {
-                              genMsg.content = '✅ 本章正文生成完毕！'; // 完成后更新卡片文字
-                              saveChapterSilently();
+                              genMsg.content = '✅ 本章正文生成完毕！';
+                              genMsg.type = 'temp';
+                              genModal.isGenerating = false;
+
+                              if (targetChapter) {
+                                  // 1. 物理清洗连续多余的换行
+                                  targetChapter.content = targetChapter.content.replace(/\n{2,}/g, '\n');
+                                  // 2. 最终算一次准确字数
+                                  targetChapter.word_count = targetChapter.content.replace(/[\r\n]/g, '').length;
+
+                                  // 3. 如果没切走画面，同步给编辑器
+                                  if (currentChapterId.value === targetChapterId) {
+                                      editorContent.value = targetChapter.content;
+                                  }
+
+                                  // 4. 【核心修复】：绕过拦截器，强制执行后端硬写入保存！
+                                  apiFetch(`${API_BASE}/books/${currentBook.value}/chapters/${targetChapterId}`, {
+                                      method: 'PUT',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ title: targetChapter.title, content: targetChapter.content })
+                                  }).catch(e => console.error("生成结束后保存失败:", e));
+                              }
                               return;
                           }
+
+                          // =================== 流式解析中的处理 ===================
                           try {
                               const parsed = JSON.parse(data);
                               if (parsed.error) {
                                   showToast('生成中断: ' + parsed.error, 'error');
                                   genMsg.content = '❌ 生成出错: ' + parsed.error;
-                                  return; // 退出循环
+                                  genMsg.type = 'normal';
+                                  return;
                               }
-                              // 【核心】：拦截后端的 debug_info 消息
                               if (parsed.type === 'debug_info') {
                                   genMsg.debug_info = parsed.data;
                               }
-                              // 【核心】：普通文字流入编辑器
-                              else if (parsed.content) {
-                                  editorContent.value += parsed.content;
-                                  const textarea = document.querySelector('.chapter-content-textarea');
-                                  if(textarea) textarea.scrollTop = textarea.scrollHeight;
+                              else if (parsed.content !== undefined || parsed.reasoning) {
+
+                                  if (parsed.reasoning) {
+                                      genMsg.full_thought += parsed.reasoning;
+                                      genMsg.content = '🤔 正在思考：\n' + genMsg.full_thought;
+                                      if (genMsg.debug_info && genMsg.debug_info.debug) {
+                                          genMsg.debug_info.debug.response += parsed.reasoning;
+                                      }
+                                  }
+
+                                  if (parsed.content) {
+                                      if (genMsg.content.startsWith('🤔')) {
+                                          genMsg.content = '✅ 思考完成，正在写入正文...';
+                                      }
+
+                                      // 轨1：永远向后台内存追加，并【强制实时刷新字数】！
+                                      if (targetChapter) {
+                                          if (!targetChapter.content) targetChapter.content = '';
+                                          targetChapter.content += parsed.content;
+                                          targetChapter.word_count = targetChapter.content.replace(/[\r\n]/g, '').length;
+                                      }
+
+                                      // 轨2：如果停留在此页，更新画面
+                                      if (currentChapterId.value === targetChapterId) {
+                                          const textarea = document.querySelector('.chapter-content-textarea');
+                                          const isAtBottom = textarea ? (textarea.scrollHeight - textarea.scrollTop - textarea.clientHeight < 50) : false;
+
+                                          editorContent.value += parsed.content;
+
+                                          if (isAtBottom) {
+                                              nextTick(() => {
+                                                  if(textarea) textarea.scrollTop = textarea.scrollHeight;
+                                              });
+                                          }
+                                      }
+                                  }
                               }
                           } catch(e) {}
                       }
                   }
               }
           } catch(e) {
+              if (e.name === 'AbortError') return;
               showToast('流式生成中断', 'error');
               genMsg.content = '❌ 生成中断';
+              genMsg.type = 'normal';
+          } finally {
+              genModal.isGenerating = false;
           }
       }
 
-      // Toast 系统
-      const toasts = ref([]);
+      function clearAiChat() {
+          if (confirm('确定要清空当前的聊天记录吗？(此操作不可逆)')) {
+              // 直接重置数组，此时我们在前面写的 watch 监听会自动触发，把 localStorage 里的数据也同步清空为初始状态
+              aiMessages.value = [{ role: 'assistant', content: '你好！我是你的写作军师。双击我的气泡可以修改或删除哦！', type: 'welcome' }];
+              showToast('历史聊天已清空', 'success');
+          }
+      }
+
+      function editAiMsg(index) {
+          const msg = aiMessages.value[index];
+          // 正在生成的临时消息不让改
+          if (msg.type === 'loading' || msg.type === 'generating') return;
+
+          // 呼出浏览器原生极简输入框
+          const newContent = prompt('✏️ 双击修改消息\n(⚠️ 提示：如果要删除该条消息，请清空下方所有文字后点确定)', msg.content);
+
+          if (newContent === null) return; // 用户点了取消
+
+          if (newContent.trim() === '') {
+              aiMessages.value.splice(index, 1); // 清空了文字，直接删除
+              showToast('消息已删除', 'success');
+          } else {
+              msg.content = newContent; // 修改了文字，覆盖更新
+              showToast('消息已修改', 'success');
+          }
+      }
+
+      // 2. 自动监听聊天记录变化，并保存到本地缓存 (跟当前书籍绑定)
+      watch(aiMessages, (newVal) => {
+          if (currentBook.value) {
+              const doNotSaveTypes = ['loading', 'generating', 'plan_ready', 'debug_card', 'temp'];
+              const toSave = newVal.filter(m => !doNotSaveTypes.includes(m.type));
+              localStorage.setItem(`ai_chat_${currentBook.value}`, JSON.stringify(toSave));
+          }
+      }, { deep: true });
+
       function showToast(message, type = 'info') {
         const id = Date.now();
         toasts.value.push({ id, message, type });
         setTimeout(() => { toasts.value = toasts.value.filter(t => t.id !== id); }, 2500);
       }
-
-      const books = ref([]);
-      const showBookDropdown = ref(false);
       function selectBook(bookName) {
           currentBook.value = bookName;
           showBookDropdown.value = false;
       }
-      const currentBook = ref(null);
-      const chapters = ref([]);
-      const currentChapterId = ref(null);
-
-      const isEditingBookName = ref(false);
-      const newBookName = ref('');
-      const activePanel = ref('chapters');
-      const expandedChapters = ref(new Set());
-      const showAiSidebar = ref(true);
-      const showSaveDropdown = ref(false);
-
-      const editMode = ref('chapter');
-      const editingMeta = ref(null);
-      const editingCharacter = ref(null);
-      const kbActiveTab = ref('book');
-
-      const analysisCache = reactive({});
-      const bookDetails = ref({});
-      const charactersList = ref([]);
-      const foreshadowsList = ref([]);
-      const memoryPacksList = ref([]);
 
 
-      // 1. 定义数据状态
-      const promptsList = ref([]);
-      const editingPrompt = ref(null);
-      const promptActiveTab = ref('system'); // 默认选中系统提示词
-      const filteredPrompts = computed(() => {
-          return promptsList.value.filter(p => p.role === promptActiveTab.value);
-      });
       // 2. 加载数据的方法
       async function loadPrompts() {
             try {
-                const res = await apiFetch(`${API_BASE}/prompts`);
-                promptsList.value = res || []; // 兜底保护，如果后端没东西就给个空数组
+                const url = currentBook.value ? `${API_BASE}/prompts?book_name=${currentBook.value}` : `${API_BASE}/prompts`;
+                const res = await apiFetch(url);
+                promptsList.value = res || [];
             } catch (e) {
                 showToast('加载提示词失败: ' + e.message, 'error');
             }
@@ -738,19 +895,19 @@
       }
 
       async function savePrompt() {
-          if (!editingPrompt.value) return;
-          try {
-              // 后端接口接收的是列表，我们把修改后的这一项包装成列表发过去
-              await apiFetch(`${API_BASE}/prompts`, {
-                  method: 'PUT',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify([editingPrompt.value])
-              });
-              showToast('提示词保存成功，即刻生效！', 'success');
-              await loadPrompts(); // 重新拉取列表，刷新 UI
-          } catch (e) {
-              showToast('提示词保存失败: ' + e.message, 'error');
-          }
+            if (!editingPrompt.value) return;
+            try {
+                const url = currentBook.value ? `${API_BASE}/prompts?book_name=${currentBook.value}` : `${API_BASE}/prompts`;
+                const res = await apiFetch(url, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify([editingPrompt.value])
+                });
+                showToast(res.message || '提示词保存成功！', 'success');
+                await loadPrompts();
+            } catch (e) {
+                showToast('提示词保存失败: ' + e.message, 'error');
+            }
       }
 
       // 5. 让面板切换时自动加载数据
@@ -760,6 +917,13 @@
       });
 
       const roleActiveTab = ref('characters');
+      watch(roleActiveTab, async (tab) => {
+            if (tab === 'factions' && currentBook.value) {
+                await loadFactions();
+            } else if (tab === 'characters' && currentBook.value) {
+                await loadCharacters();
+            }
+      });
 
       // ================= 向量数据可视化与沙盒 =================
       const vectorSnippetsList = ref([]);
@@ -817,7 +981,7 @@
 
       // 英文 key 转中文显示
       function formatMetaKey(key) {
-          const map = { scene_type:'片段', plot_trope:'剧情', characters:'角色', factions:'势力', items:'物品', locations:'地理', description_focus:'描写' };
+          const map = { intent_summary: '特征摘要', dynamic_tags: '动态标签', characters:'角色', factions:'势力', items:'物品', locations:'地理' };
           return map[key] || key;
       }
 
@@ -1015,29 +1179,11 @@
           return `${mainName} ➔ ${subName}`;
       }
 
-      // 新增：管理伏笔的多选弹窗状态
-      const fsModal = reactive({ visible: false, selected: [], newName: '' });
 
-      const deletingItemId = ref(null);
-
-      // AI 相关
-      const finalizeSteps = ref([]); // 存储定稿的实时步骤
-      const showDebugModal = ref(false); // 调试大框开关
-      const selectedDebug = ref(null); // 当前选中的调试内容
-
-      const aiModels = ref([]);
-      const aiConfig = reactive({ model: 'openai/gpt-4o-mini', api_key: '', temperature: 0.7, max_tokens: 1024, top_p: 1.0 });
-      const isTestingConnection = ref(false);
-
-      const aiMessages = ref([{ role: 'assistant', content: '你好！我是你的写作AI～' }]);
-      const aiInput = ref('');
-      const aiMode = ref('chat');
-      const aiInputExpanded = ref(false);
-      const aiTextareaRef = ref(null);
 
 
       // ========== 全局提示词预览弹窗 ==========
-      const promptPreviewModal = reactive({ visible: false, content: '' });
+
 
       function copyPrompt() {
           navigator.clipboard.writeText(promptPreviewModal.content).then(() => {
@@ -1076,7 +1222,7 @@
               showToast('⏳ 正在为您组装终极提示词...', 'success');
           } else {
               aiInput.value = ''; // 清空输入框
-              aiMessages.value.push({ role: 'user', content: msg });
+              aiMessages.value.push({ role: 'user', content: msg, type: 'normal' }); // 补齐 type
               aiMessages.value.push({ id: 'shape_loading', role: 'assistant', type: 'loading', content: '⏳ 正在全览世界观并构思设定，请稍候...' });
               nextTick(adjustAiTextareaHeight);
           }
@@ -1092,10 +1238,8 @@
                   promptPreviewModal.content = res.prompt;
                   promptPreviewModal.visible = true;
               } else if (!isPreview && res.status === 'success') {
-                  // 移除 loading 消息
                   aiMessages.value = aiMessages.value.filter(m => m.id !== 'shape_loading');
-                  // 插入生成结果
-                  aiMessages.value.push({ role: 'assistant', content: res.content });
+                  aiMessages.value.push({ role: 'assistant', content: res.content, type: 'normal' });
               }
           } catch (e) {
               showToast('生成失败: ' + e.message, 'error');
@@ -1103,7 +1247,6 @@
           }
       }
 
-      // 劫持原有的 sendAiMessage 方法
       const originalSendAiMessage = sendAiMessage;
       sendAiMessage = async function() {
           const msg = aiInput.value.trim();
@@ -1111,8 +1254,8 @@
 
           if (aiMode.value === 'chat') {
               // 👉 1. 自由聊天模式
-              aiInput.value = ''; // 清空输入框
-              aiMessages.value.push({ role: 'user', content: msg, type: 'normal' });
+              aiInput.value = '';
+              aiMessages.value.push({ role: 'user', content: msg, type: 'normal' }); // 确保它是 normal
               await triggerNormalChat(msg);
 
           } else if (aiMode.value === 'shape') {
@@ -1121,7 +1264,13 @@
 
           } else {
               // 👉 3. 章节生成 / 续写模式
-              await originalSendAiMessage();
+              aiInput.value = '';
+
+              // 【核心修复】：每次发起新的生成前，自动把聊天框里上一次遗留的大纲卡片、源码卡片、生成完毕卡片清空！
+              aiMessages.value = aiMessages.value.filter(m => !['plan_ready', 'debug_card', 'temp', 'generating'].includes(m.type));
+
+              await triggerGeneratePlan(msg);
+              nextTick(adjustAiTextareaHeight);
           }
       }
 
@@ -1154,6 +1303,21 @@
       });
       watch(editorContent, () => { if (editMode.value === 'meta') triggerAutoResize(); });
 
+      function openGenModalManual() {
+          if (!currentBook.value || !currentChapterId.value) return showToast('请先选择书籍和章节', 'error');
+
+          // 伪造一个空的 planData 传给原有的弹窗函数，顺便把输入框的草稿直接填到大纲里
+          openGenModal({
+              content_plan: aiInput.value.trim(),
+              suggested_tags: [],
+              involved_characters: [],
+              debug_info: null
+          });
+
+          aiInput.value = ''; // 打开面板后顺手清空外面的输入框
+          nextTick(adjustAiTextareaHeight);
+      }
+
       function adjustAiTextareaHeight() {
         const el = aiTextareaRef.value;
         if (!el) return;
@@ -1168,12 +1332,14 @@
 
       async function loadBooks() { try { books.value = await apiFetch(`${API_BASE}/books`); if (books.value.length && !currentBook.value) currentBook.value = books.value[0]; else if (currentBook.value && !books.value.includes(currentBook.value)) currentBook.value = books.value[0] || null; } catch (e) { showToast(e.message, 'error'); } }
       async function createBook() { const name = newBookName.value.trim(); if (!name) return showToast('书名不能为空', 'error'); try { await apiFetch(`${API_BASE}/books`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); newBookName.value = ''; isEditingBookName.value = false; await loadBooks(); currentBook.value = name; showToast('创建成功', 'success'); } catch (e) { showToast(e.message, 'error'); } }
-      async function deleteBook() { if (!currentBook.value) return; if (!confirm(`确定删除“${currentBook.value}”？`)) return; try { await apiFetch(`${API_BASE}/books/${currentBook.value}`, { method: 'DELETE' }); await loadBooks(); currentBook.value = books.value[0] || null; currentChapterId.value = null; showToast('删除成功', 'success'); } catch (e) { showToast('删除失败', 'error'); } }
+      async function deleteBook() { if (!currentBook.value) return; if (!confirm(`确定删除“${currentBook.value}”？`)) return; try { await apiFetch(`${API_BASE}/books/${currentBook.value}`, { method: 'DELETE' });localStorage.removeItem(`ai_chat_${currentBook.value}`); await loadBooks(); currentBook.value = books.value[0] || null; currentChapterId.value = null; showToast('删除成功', 'success'); } catch (e) { showToast('删除失败', 'error'); } }
       async function loadBookDetails() { if (!currentBook.value) return; try { bookDetails.value = await apiFetch(`${API_BASE}/books/${currentBook.value}`); } catch (e) {} }
 
       watch(currentBook, async (newBook, oldBook) => {
         if (oldBook && editMode.value === 'chapter' && currentChapterId.value) await saveChapterSilently();
         if (newBook) {
+            const savedChat = localStorage.getItem(`ai_chat_${newBook}`);
+            aiMessages.value = savedChat ? JSON.parse(savedChat) : [{ role: 'assistant', content: '你好！我是你的写作军师。双击我的气泡可以修改或删除哦！', type: 'welcome' }];
             await loadChapters(); await loadBookDetails(); await loadCharacters();
             await loadForeshadows(); await loadMemoryPacks(); await loadStorylines();
             await loadFactions(); // 【修复补充】：切换书籍时加载势力
@@ -1182,6 +1348,7 @@
             charactersList.value = []; foreshadowsList.value = []; memoryPacksList.value = [];
             storylineNodes.value = []; factionsList.value = []; // 清空势力
         }
+        if (activePanel.value === 'prompts') { await loadPrompts(); }
         editMode.value = 'chapter'; editingMeta.value = null; editingCharacter.value = null; editingStorylineNode.value = null;
         updateEditorFromChapter();
       });
@@ -1190,7 +1357,13 @@
       function updateEditorFromChapter() { if (editMode.value !== 'chapter') return; const ch = chapters.value.find(c => c.id === currentChapterId.value); if (ch) { editorTitle.value = ch.title || ''; editorContent.value = ch.content || ''; } else { editorTitle.value = ''; editorContent.value = ''; } }
       watch(currentChapterId, () => { if (editMode.value === 'chapter') updateEditorFromChapter(); });
 
-      let saveTimer; watch([editorTitle, editorContent], () => { if (editMode.value !== 'chapter' || !currentChapterId.value) return; clearTimeout(saveTimer); saveTimer = setTimeout(() => saveChapterSilently(), 800); });
+      let saveTimer;
+      watch([editorTitle, editorContent], () => {
+            if (editMode.value !== 'chapter' || !currentChapterId.value) return;
+            if (genModal.isGenerating) return;
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => saveChapterSilently(), 800);
+      });
       async function saveChapterSilently() { if (!currentBook.value || !currentChapterId.value) return; const ch = chapters.value.find(c => c.id === currentChapterId.value); if (!ch) return; const newTitle = editorTitle.value, newContent = editorContent.value; if (ch.title === newTitle && ch.content === newContent) return; const wordCount = newContent.replace(/[\r\n]/g, '').length; try { await apiFetch(`${API_BASE}/books/${currentBook.value}/chapters/${currentChapterId.value}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: newTitle, content: newContent }) }); ch.title = newTitle; ch.content = newContent; ch.word_count = wordCount; } catch (e) {} }
       async function createChapter() {
           if (!currentBook.value) return showToast('请先选择书籍', 'error');
@@ -1493,12 +1666,30 @@
           editingCharacter.value = null;
           charForm.name = '';
           charForm.importance_level = 1;
-          charForm.personal_info = ''; // 【新增】
+          charForm.personal_info = '';
           charForm.change_log = '';
           charForm.relationships = '';
           charForm.profile = '';
+          charForm.attributes_log = ''
           editMode.value = 'character';
       }
+
+      function addRelationship() {
+          charForm.relationships.push({ target: '', historyItems: [] });
+      }
+      function removeRelationship(index) {
+          if (confirm('确定要移除与该角色的所有羁绊记录吗？')) {
+              charForm.relationships.splice(index, 1);
+          }
+      }
+      function addRelationshipHistory(relIndex) {
+          charForm.relationships[relIndex].historyItems.push({ prefix: '', content: '', isAi: false });
+          triggerAutoResize();
+      }
+      function removeRelationshipHistory(relIndex, histIndex) {
+          charForm.relationships[relIndex].historyItems.splice(histIndex, 1);
+      }
+
       function editCharacter(char) {
         editingCharacter.value = { ...char };
         charForm.name = char.character_name;
@@ -1509,18 +1700,25 @@
         // 解析关系网对象为多行文本
         if (Array.isArray(char.relationships)) {
             charForm.relationships = char.relationships.map(r => {
-                if (typeof r === 'string') return r; // 兼容旧版本的纯字符串格式
-                if (r && typeof r === 'object') {
-                    let historyStr = (r.history && r.history.length) ? r.history[r.history.length - 1] : '';
-                    return `${r.target}: ${historyStr}`;
-                }
-                return '';
-            }).filter(s => s).join('\n');
+                return {
+                    target: r.target,
+                    historyItems: (r.history || []).map(hStr => {
+                        // 使用正则提取：例如把 "【第1章】：初见" 劈开
+                        const match = hStr.match(/^(【.*?】(?:：|:)?\s*)(.*)/);
+                        if (match) {
+                            return { prefix: match[1], content: match[2], isAi: true }; // AI生成的，拆分
+                        } else {
+                            return { prefix: '', content: hStr, isAi: false }; // 手动写的，不拆分
+                        }
+                    })
+                };
+            });
         } else {
-            charForm.relationships = char.relationships || '';
+            charForm.relationships = [];
         }
 
         charForm.profile = char.profile || '';
+        charForm.attributes_log = char.attributes_log || '';
         editMode.value = 'character';
       }
 
@@ -1528,22 +1726,31 @@
           if (!charForm.name.trim()) { showToast('角色名不能为空', 'error'); return; }
 
           // 组装回后端 AI 需要的对象数组格式
-          const relArray = charForm.relationships.split('\n').map(s => s.trim()).filter(s => s).map(s => {
-              // 支持中文冒号或英文冒号分割
-              const parts = s.split(/[:：]/);
-              if (parts.length >= 2) {
-                  const target = parts[0].trim();
-                  const desc = parts.slice(1).join(':').trim();
-                  return { target: target, history: [desc] };
-              }
-              return { target: s, history: [] }; // 如果用户没输入冒号，直接作为 target
-          });
+          const relArray = charForm.relationships
+              .filter(r => r.target && typeof r.target === 'string' && r.target.trim() !== '')
+              .map(r => {
+                  return {
+                      target: r.target.trim(),
+                      // 防弹级解析逻辑
+                      history: (r.historyItems || [])
+                          .map(item => {
+                              if (!item) return ''; // 过滤空值
+                              // 如果是旧版本残留的纯字符串，直接返回
+                              if (typeof item === 'string') return item.trim();
+                              // 如果是新版本的对象格式，安全拼接
+                              const p = item.prefix || '';
+                              const c = item.content || '';
+                              return String(p + c).trim(); // 👈 这一步强制转换成了字符串，绝不会再报 .trim 的错误！
+                          })
+                          .filter(str => str !== '')
+                  };
+              });
 
           const payload = {
               importance_level: charForm.importance_level,
-              personal_info: charForm.personal_info, // 【新增】发给后端
+              personal_info: charForm.personal_info,
               change_log: charForm.change_log,
-              relationships: relArray,
+              relationships: relArray, // 直接把干净的结构化数组传给后端
               profile: charForm.profile
           };
 
@@ -1594,7 +1801,7 @@
       function confirmDelete(type, key) { if (type === 'meta') deleteMeta(key); else if (type === 'foreshadow') deleteForeshadow(key); else if (type === 'memory') deleteMemoryPack(key); else if (type === 'character') deleteCharacter(key); else if (type === 'faction') deleteFaction(key);}
 
       async function loadAIModels() { try { aiModels.value = await apiFetch(`${API_BASE}/ai/models`); } catch (e) { showToast('加载模型列表失败', 'error'); } }
-      async function loadAIConfig() { try { const config = await apiFetch(`${API_BASE}/ai/config`); aiConfig.model = config.model || aiConfig.model; aiConfig.api_key = config.api_key || ''; aiConfig.temperature = config.temperature ?? 0.7; aiConfig.max_tokens = config.max_tokens ?? 1024; aiConfig.top_p = config.top_p ?? 1.0; } catch (e) { showToast('加载配置失败', 'error'); } }
+      async function loadAIConfig() { try { const config = await apiFetch(`${API_BASE}/ai/config`); aiConfig.model = config.model || aiConfig.model; aiConfig.api_key = config.api_key || ''; aiConfig.temperature = config.temperature ?? 0.7; aiConfig.max_tokens = config.max_tokens ?? 1024; aiConfig.top_p = config.top_p ?? 1.0; aiConfig.refinalize_plot = config.refinalize_plot ?? true;aiConfig.refinalize_entity = config.refinalize_entity ?? true;aiConfig.refinalize_vector = config.refinalize_vector ?? true;} catch (e) { showToast('加载配置失败', 'error'); } }
       async function saveAIConfig() {
           try {
               await apiFetch(`${API_BASE}/ai/config`, {
@@ -1603,9 +1810,12 @@
                   body: JSON.stringify({
                       model: aiConfig.model,
                       api_key: aiConfig.api_key,
-                      temperature: parseFloat(aiConfig.temperature), // 👉 强转为浮点数
-                      max_tokens: parseInt(aiConfig.max_tokens),     // 👉 强转为整数
-                      top_p: parseFloat(aiConfig.top_p)              // 👉 强转为浮点数
+                      temperature: parseFloat(aiConfig.temperature),
+                      max_tokens: parseInt(aiConfig.max_tokens),
+                      top_p: parseFloat(aiConfig.top_p),
+                      refinalize_plot: aiConfig.refinalize_plot,
+                      refinalize_entity: aiConfig.refinalize_entity,
+                      refinalize_vector: aiConfig.refinalize_vector
                   })
               });
               showToast('配置已保存', 'success');
@@ -1652,7 +1862,7 @@
       async function triggerNormalChat(msg) {
           // 1. 提取纯净的历史记录
           const history = aiMessages.value
-              .filter(m => !m.type || m.type === 'normal')
+              .filter(m => m.type === 'normal')
               .map(m => ({ role: m.role, content: m.content }));
 
           // 👉 核心新增：从提示词管理器中动态抓取自定义的“系统设定”和“助手预设”
@@ -1681,10 +1891,12 @@
           };
 
           try {
+              aiAbortController.value = new AbortController();
               const res = await fetch(`${API_BASE}/ai/chat/stream`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(payload)
+                  body: JSON.stringify(payload),
+                  signal: aiAbortController.value.signal
               });
 
               const reader = res.body.getReader();
@@ -1710,18 +1922,24 @@
                                   return;
                               }
                               if (parsed.content) {
-                                  // 核心：把接收到的字追加到气泡中
-                                  targetMsg.content += parsed.content;
-
-                                  // 自动往下滚动
                                   const container = document.querySelector('.ai-messages');
-                                  if(container) container.scrollTop = container.scrollHeight;
+                                  const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight < 50) : false;
+                                  targetMsg.content += parsed.content;
+                                  if (isAtBottom) {
+                                      nextTick(() => {
+                                          if(container) container.scrollTop = container.scrollHeight;
+                                      });
+                                  }
                               }
                           } catch(e) {}
                       }
                   }
               }
           } catch(e) {
+              if (e.name === 'AbortError') {
+                  showToast('手动中断', 'error');
+                  return;
+              }
               showToast('网络请求中断', 'error');
           }
       }
@@ -1758,15 +1976,22 @@
           const payload = {
             title: editorTitle.value,
             content: editorContent.value,
-            is_re_final: isReFinal
+            is_re_final: isReFinal,
+            tracks: {
+                plot: aiConfig.refinalize_plot,
+                entity: aiConfig.refinalize_entity,
+                vector: aiConfig.refinalize_vector
+            }
           };
 
           try {
             // 3. 发起流式请求
+            aiAbortController.value = new AbortController();
             const res = await fetch(`${API_BASE}/books/${currentBook.value}/chapters/${currentChapterId.value}/finalize`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+                body: JSON.stringify(payload),
+                signal: aiAbortController.value.signal
             });
 
             const reader = res.body.getReader();
@@ -1785,8 +2010,7 @@
                         const data = line.slice(6);
                         if (data === '[DONE]') {
                             if(ch) ch.status = true;
-                            // 刷新数据
-                            await Promise.all([loadStorylines(), loadForeshadows(), loadAnalysisData()]);
+                            await Promise.all([loadChapters(), loadStorylines(), loadForeshadows(), loadAnalysisData(), loadCharacters(),loadFactions()]);
                             return;
                         }
                         try {
@@ -1808,11 +2032,24 @@
                 }
             }
           } catch (e) {
+            if (e.name === 'AbortError'){
+                showToast('手动中断', 'error');
+                return;
+            }
             showToast('定稿流程中断', 'error');
           }
       }
 
+      function formatEditorContent() {
+          if (!editorContent.value) return;
+          const oldContent = editorContent.value;
+          const newContent = editorContent.value.replace(/\n{2,}/g, '\n');
 
+          if (oldContent !== newContent) {
+              editorContent.value = newContent;
+              saveChapterSilently(); // 格式化后自动保存一下
+          }
+      }
       function toggleSaveDropdown() { showSaveDropdown.value = !showSaveDropdown.value; }
       function handleSave(type) { showSaveDropdown.value = false; if (type === 'final') { triggerFinalize(false); } else if (type === 'reFinal') { triggerFinalize(true); } }
       window.addEventListener('click', (e) => {
@@ -1823,7 +2060,7 @@
       watch(activePanel, async (p) => {
         if (p === 'analysis') { await loadAnalysisData(); await loadCharacters(); }
         if (p === 'knowledge') { await loadBookDetails(); await loadForeshadows(); await loadMemoryPacks(); await loadStorylines(); }
-        if (p === 'characters') { await loadCharacters(); }
+        if (p === 'characters') { await loadCharacters(); await loadFactions();}
         if (p === 'chapters') { editMode.value = 'chapter'; updateEditorFromChapter(); }
         if (p === 'ai') { await loadAIModels(); await loadAIConfig(); }
       });
@@ -1855,9 +2092,12 @@
         // 新增的绑定故事线相关变量和方法
         slBindModal, openStorylineBindModal, saveStorylineBind,
 
+        // 手动中断
+        clearAiChat, stopAllAiGenerations, aiAbortController,
+
         // 章节生成
         allVectorTags, tagsModalVisible, openTagsModal, quickAddTag,
-        genModal, openGenModal, addTagInput, removeTagInput, queryGenVectors, toggleSnippetExclude, confirmGenerateChapter,viewDebug,
+        genModal, openGenModal, addTagInput, removeTagInput, queryGenVectors, toggleSnippetExclude, confirmGenerateChapter,viewDebug,openGenModalManual,
 
         // 角色势力生成
         promptPreviewModal, copyPrompt,
@@ -1908,13 +2148,13 @@
         isTailCompleted, isLastNode, editStorylineNode, addParentStoryline, addChildStoryline,
         deleteStorylineNode, updateStorylineProgress, saveStorylinesTree,isSummarizing, generateStorylineSummary,
 
-
         // 角色操作
         newCharacter, editCharacter, saveCharacter, deleteCharacter, cancelEditCharacter,
+        addRelationship, removeRelationship, addRelationshipHistory, removeRelationshipHistory,
 
         // 通用及其他
         manualSave, sendAiMessage, metaList, startDelete, cancelDelete, confirmDelete,
-        autoResizeTextarea, toggleSaveDropdown, handleSave,
+        autoResizeTextarea, toggleSaveDropdown, handleSave,editAiMsg,clearAiChat,formatEditorContent,
 
         // 提示词管理
         promptsList, editingPrompt, loadPrompts, editPrompt, cancelEditPrompt, savePrompt,promptActiveTab, filteredPrompts,
@@ -1962,6 +2202,9 @@
           </div>
           <div class="center-title">[[ currentBook || '未选择书籍' ]]</div>
           <div class="right-group">
+            <button @click="stopAllAiGenerations" style="background: #ef4444; color: white; border: none; padding: 4px 12px; border-radius: 30px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px; margin-right: 8px;">
+              🛑 停止
+            </button>
             <div class="save-dropdown">
               <button class="save-btn" @click="toggleSaveDropdown">💾 保存 <span class="arrow">▼</span></button>
               <div v-if="showSaveDropdown" class="dropdown-menu">
@@ -2002,7 +2245,10 @@
           <div class="sidebar-panel" v-show="activePanel === 'analysis'">
             <div class="panel-header"><span>📊 章节分析</span><div class="panel-header-actions"><span class="icon-btn" @click="loadAnalysisData">🔄</span></div></div>
             <div class="panel-content">
-              <div v-for="ch in chapters" class="analysis-chapter-item">
+
+              <div v-if="!chapters.filter(c => c.status).length" style="padding:12px;text-align:center;color:#94a3b8;">暂无已定稿分析的章节</div>
+
+              <div v-for="ch in chapters.filter(c => c.status)" :key="ch.id" class="analysis-chapter-item">
                 <div class="analysis-chapter-header" @click="toggleExpand(ch.id)"><span class="expand-icon">[[ expandedChapters.has(ch.id) ? '▼' : '▶' ]]</span><span>第[[ ch.id ]]章 [[ ch.title ]]</span></div>
                 <div v-if="expandedChapters.has(ch.id)" class="analysis-detail">
                   <div class="analysis-field-row"><span class="field-label-text">摘要</span><div class="field-content"><span>[[ getAnalysis(ch.id).summary || '暂无' ]]</span><span class="edit-pencil" @click.stop="openEditModal(ch.id, 'summary', getAnalysis(ch.id).summary)">✎</span></div></div>
@@ -2134,14 +2380,14 @@
                     </h3>
 
                     <div style="display: flex; gap: 10px; margin-bottom: 12px;">
-                        <input v-model="vectorSearchModal.query" placeholder="【必填】输入语义查询词 (如: 张三用剑反杀的细节)" style="flex: 1; border-color:#8b5cf6; box-shadow: 0 0 0 2px rgba(139,92,246,0.1);">
+                        <input v-model="vectorSearchModal.query" placeholder="查询内容" style="flex: 1; border-color:#8b5cf6; box-shadow: 0 0 0 2px rgba(139,92,246,0.1);">
                     </div>
 
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; background: #f8fafc; padding: 16px; border-radius: 12px; border: 1px solid #e2e8f0;">
-                        <div style="grid-column: span 2; font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: -4px;">八大维度漏斗过滤 (选填，精准匹配)</div>
-                        <div><label style="font-size: 11px; color: #64748b;">片段类型 (scene_type)</label><input v-model="vectorSearchModal.filters.scene_type" placeholder="如: 战斗"></div>
-                        <div><label style="font-size: 11px; color: #64748b;">剧情类型 (plot_trope)</label><input v-model="vectorSearchModal.filters.plot_trope" placeholder="如: 绝境反杀"></div>
-                        <div><label style="font-size: 11px; color: #64748b;">涉及角色 (characters)</label><input v-model="vectorSearchModal.filters.characters" placeholder="如: 张三"></div>
+                        <div style="grid-column: span 2; font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: -4px;">
+                            四大实体漏斗过滤 (选填，精准绝对匹配，支持输入多个用逗号隔开)
+                        </div>
+                        <div><label style="font-size: 11px; color: #64748b;">涉及角色 (characters)</label><input v-model="vectorSearchModal.filters.characters" placeholder="如: 张三,李四"></div>
                         <div><label style="font-size: 11px; color: #64748b;">涉及势力 (factions)</label><input v-model="vectorSearchModal.filters.factions" placeholder="如: 黑龙商会"></div>
                         <div><label style="font-size: 11px; color: #64748b;">涉及物品 (items)</label><input v-model="vectorSearchModal.filters.items" placeholder="如: 破空剑法"></div>
                         <div><label style="font-size: 11px; color: #64748b;">地理坐标 (locations)</label><input v-model="vectorSearchModal.filters.locations" placeholder="如: 乱葬岗"></div>
@@ -2211,14 +2457,6 @@
                     <div class="character-info" style="flex: 1; overflow: hidden;">
                         <div class="character-name">[[ char.character_name ]]</div>
                         <div class="character-stars">[[ '★'.repeat(char.importance_level || 1) ]]</div>
-                        <div style="margin-top: 6px; font-size: 12px; color: #475569;">
-                            <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><strong>快照：</strong>[[ char.profile || '暂无设定' ]]</div>
-                            <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">
-                                <strong>近期弧光：</strong>
-                                <span v-if="char.arc_history && char.arc_history.length">[[ char.arc_history[char.arc_history.length - 1].arc_summary ]]</span>
-                                <span v-else>暂无变动</span>
-                            </div>
-                        </div>
                     </div>
 
                     <div v-if="deletingItemId?.type === 'character' && deletingItemId.key === char.character_name" class="delete-confirm" style="flex-shrink: 0;">
@@ -2260,6 +2498,15 @@
             <div class="panel-content">
               <div class="setting-group"><label>选择模型</label><select v-model="aiConfig.model"><option v-for="m in aiModels" :value="m.id">[[ m.name ]] ([[ m.provider ]])</option></select></div>
               <div class="setting-group"><label>API Key (留空则使用环境变量)</label><input type="password" v-model="aiConfig.api_key" placeholder="sk-..."></div>
+
+              <div class="setting-group" style="background:#f8fafc; padding:10px; border-radius:8px; border:1px solid #e2e8f0;">
+                  <label style="color:#3b82f6;">🔄 重新定稿执行范围</label>
+                  <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
+                      <label style="font-size:12px; cursor:pointer;"><input type="checkbox" v-model="aiConfig.refinalize_plot"> 轨一：剧情推演与伏笔 (推荐)</label>
+                      <label style="font-size:12px; cursor:pointer;"><input type="checkbox" v-model="aiConfig.refinalize_entity"> 轨二：角色状态与势力转变</label>
+                      <label style="font-size:12px; cursor:pointer;"><input type="checkbox" v-model="aiConfig.refinalize_vector"> 轨三：高光片段向量存入</label>
+                  </div>
+              </div>
               <div class="setting-group"><label>Temperature: [[ aiConfig.temperature ]]</label><input type="range" min="0" max="2" step="0.1" v-model="aiConfig.temperature"></div>
               <div class="setting-group"><label>Max Tokens</label><div class="slider-container"><input type="range" min="100" max="128000" step="50" v-model="aiConfig.max_tokens"><input type="number" min="100" max="2000000" step="50" v-model="aiConfig.max_tokens"></div></div>
               <div class="setting-group"><label>Top P: [[ aiConfig.top_p ]]</label><input type="range" min="0" max="1" step="0.05" v-model="aiConfig.top_p"></div>
@@ -2269,7 +2516,7 @@
                 </button>
                 <button class="modal-btn primary" @click="saveAIConfig">💾 保存配置</button>
               </div>
-            </div>
+              </div>
           </div>
 
           <div class="sidebar-panel" v-show="activePanel === 'prompts'">
@@ -2303,19 +2550,13 @@
           <div class="main-editor">
             <div v-if="editMode === 'chapter'" class="editor-full">
               <div class="editor-container">
-
-                <div style="display: flex; align-items: baseline; border-bottom: 2px solid #e2e8f0; margin-bottom: 20px;">
-
+                <div class="editor-title-wrapper">
                     <span style="font-size: 28px; font-weight: 700; color: #1e293b; user-select: none; margin-right: 12px; white-space: nowrap;">
                         第[[ currentChapterId ]]章
                     </span>
-
-                    <input type="text" v-model="editorTitle"
-                           style="flex: 1; font-size: 28px; font-weight: 700; border: none; outline: none; background: transparent; padding: 12px 0; color: #1e293b;"
-                           placeholder="本章标题">
+                    <input type="text" v-model="editorTitle" class="chapter-title-input" placeholder="本章标题">
                 </div>
-
-                <textarea v-model="editorContent" class="chapter-content-textarea" placeholder="正文内容..."></textarea>
+                <textarea v-model="editorContent" class="chapter-content-textarea" placeholder="正文内容..." @blur="formatEditorContent"></textarea>
               </div>
             </div>
             <div v-else class="editor-card-mode">
@@ -2388,13 +2629,49 @@
                   <template v-else-if="editMode === 'character'">
                     <div class="editor-field"><label>姓名</label><input v-model="charForm.name"></div>
                     <div class="editor-field"><label>重要性</label><select v-model="charForm.importance_level"><option v-for="opt in importanceOptions" :value="opt.value">[[ opt.label ]]</option></select></div>
-                    <div class="editor-field">
-                        <label>个人资料</label>
-                        <textarea v-model="charForm.personal_info" @input="autoResizeTextarea" placeholder="基础身份、战力境界、核心身世背景等..."></textarea>
-                    </div>
+                    <div class="editor-field"><label>个人资料</label><textarea v-model="charForm.personal_info" @input="autoResizeTextarea" placeholder="基础身份、战力境界..."></textarea></div>
                     <div class="editor-field"><label>外貌性格</label><textarea v-model="charForm.profile" @input="autoResizeTextarea" placeholder="详细描述..."></textarea></div>
+                    <div class="editor-field">
+                        <label>状态与物品演变日志 (AI 自动记录)</label>
+                        <textarea v-model="charForm.attributes_log" @input="autoResizeTextarea" readonly style="background:#f8fafc; color:#64748b; cursor:not-allowed;" placeholder="定稿后自动提取的物品/技能变动将显示在这里..."></textarea>
+                    </div>
                     <div class="editor-field"><label>弧光变化</label><textarea v-model="charForm.change_log" @input="autoResizeTextarea" placeholder="角色发展记录"></textarea></div>
-                    <div class="editor-field"><label>关系网</label><textarea v-model="charForm.relationships" @input="autoResizeTextarea" placeholder="例如: 张三: 朋友, 李四: 导师 (每行一条)"></textarea></div>
+                    <div class="editor-field">
+                        <label>关系网 (结构化面板)</label>
+
+                        <div v-for="(rel, rIdx) in charForm.relationships" :key="rIdx" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <span style="font-size: 13px; color: #64748b; font-weight: bold;">羁绊对象：</span>
+                                    <input v-model="rel.target" @blur="saveCharacter" placeholder="输入角色名" style="font-weight: bold; width: 150px; padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px;">
+                                </div>
+                                <button @click="removeRelationship(rIdx); saveCharacter();" style="background: #fee2e2; color: #ef4444; border: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; cursor: pointer;">🗑️ 移除此人</button>
+                            </div>
+
+                            <div style="padding-left: 12px; border-left: 2px solid #cbd5e1; margin-left: 6px;">
+                                <div v-for="(histItem, hIdx) in rel.historyItems" :key="hIdx" style="display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px;">
+
+                                    <span v-if="histItem.isAi" style="font-size: 12px; padding-top: 8px;" title="AI自动记录">🤖</span>
+                                    <span v-else style="font-size: 12px; padding-top: 8px;" title="手动记录">✏️</span>
+
+                                    <div v-if="histItem.isAi" style="padding: 8px 0; font-size: 13px; font-weight: bold; color: #475569; white-space: nowrap; user-select: none;">
+                                       [[histItem.prefix]]
+                                    </div>
+
+                                    <textarea v-model="histItem.content" @input="autoResizeTextarea" @blur="saveCharacter"
+                                              :style="histItem.isAi ? 'background: #f1f5f9; border: 1px solid #cbd5e1;' : 'border: 1px solid #94a3b8;'"
+                                              style="flex: 1; min-height: 40px; font-size: 13px; padding: 8px; border-radius: 6px;"></textarea>
+
+                                    <button @click="removeRelationshipHistory(rIdx, hIdx); saveCharacter();" style="background: none; border: none; color: #94a3b8; font-size: 16px; cursor: pointer; padding: 4px;">✕</button>
+                                </div>
+
+                                <button @click="addRelationshipHistory(rIdx)" style="background: none; border: none; color: #3b82f6; font-size: 12px; cursor: pointer; font-weight: 600; margin-top: 4px;">+ 添加一条手动记录</button>
+                            </div>
+                        </div>
+
+                        <button @click="addRelationship" style="width: 100%; border: 1px dashed #cbd5e1; background: #fff; color: #3b82f6; padding: 10px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.2s;">➕ 新增一个羁绊角色</button>
+                    </div>
                     <div class="editor-actions"><button class="modal-btn secondary" @click="cancelEditCharacter">取消</button><button class="modal-btn primary" @click="saveCharacter">保存角色</button></div>
                   </template>
 
@@ -2448,7 +2725,10 @@
           </div>
 
           <div class="ai-sidebar" v-show="showAiSidebar">
-            <div class="ai-header"><span>🤖 文形小助手</span></div>
+            <div class="ai-header">
+                <span>🤖 小助手</span>
+                <span class="icon-btn" @click="clearAiChat" title="清空" style="background:transparent; color:#94a3b8; font-size:14px; width:auto; height:auto;">🗑️ 清空</span>
+            </div>
             <div class="ai-messages">
               <template v-if="finalizeSteps.length">
                   <div v-for="step in finalizeSteps" :key="step.engine"
@@ -2468,9 +2748,10 @@
               </template>
 
               <template v-else>
-                  <div v-for="msg in aiMessages" :key="msg.id" class="message" :class="[msg.role, { 'plan-ready': msg.type === 'plan_ready' || msg.type === 'debug_card' }]">
+                  <div v-for="(msg, index) in aiMessages" :key="msg.id || index" class="message" :class="[msg.role, { 'plan-ready': msg.type === 'plan_ready' || msg.type === 'debug_card' }]">
 
                     <div class="message-bubble"
+                         @dblclick="editAiMsg(index)"
                          @click="msg.type === 'plan_ready' ? openGenModal(msg.planData) : (msg.type === 'debug_card' ? viewDebug(msg.debug_info) : null)"
                          :style="msg.type === 'debug_card' ? 'background:#f8fafc; border: 1px dashed #cbd5e1; color:#475569; cursor:pointer;' : ''">
 
@@ -2524,6 +2805,8 @@
                     <button class="send-btn" @click="sendAiMessage" style="margin: 0; height: 32px;">发送</button>
                     <!-- 预览提示词按钮 -->
                     <button v-if="aiMode === 'shape'" class="modal-btn secondary" style="font-size:11px; padding:4px 8px; height:24px; margin:0;" @click="triggerEntityShape(true)">👁️ 预览提示词</button>
+                    <!-- ✨ 新增：跳过 AI 分析，手动配置按钮 -->
+                    <button v-if="aiMode === 'generate' || aiMode === 'continue'" class="modal-btn secondary" style="font-size:11px; padding:4px 8px; height:24px; margin:0; background:#f1f5f9; color:#475569;" @click="openGenModalManual">⚡ 手动组装</button>
                 </div>
               </div>
             </div>
@@ -2757,13 +3040,14 @@
 
                                         <!-- 7大维度漏斗输入 -->
                                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                                            <div v-for="(label, key) in {'scene_type':'片段类型', 'plot_trope':'剧情类型', 'characters':'涉及角色', 'factions':'涉及势力', 'items':'涉及物品', 'locations':'地理坐标', 'description_focus':'描写焦点'}" :key="key">
+                                            <div v-for="(label, key) in {'characters':'涉及角色', 'factions':'涉及势力', 'items':'涉及物品', 'locations':'地理坐标'}" :key="key">
                                                 <label style="font-size: 11px; color: #64748b; display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 4px;">
                                                     <input type="checkbox" v-model="tagObj.filters[key].enabled" style="margin:0; cursor: pointer;">
                                                     <span :style="tagObj.filters[key].enabled ? 'color:#3b82f6; font-weight:bold;' : ''">[[ label ]] ([[ key ]])</span>
                                                 </label>
                                                 <input v-model="tagObj.filters[key].value"
                                                        :disabled="!tagObj.filters[key].enabled"
+                                                       placeholder="例如: 张三,李四"
                                                        :style="!tagObj.filters[key].enabled ? 'background:#e2e8f0; cursor:not-allowed; opacity:0.6;' : 'background:#fff; border-color:#3b82f6;'"
                                                        style="width:100%; padding:6px 8px; border:1px solid #cbd5e1; border-radius:4px; font-size:12px; outline:none;">
                                             </div>

@@ -85,16 +85,14 @@ def update_chapter(book_name, chapter_id):
 
 @api_bp.route('/books/<book_name>/chapters/<int:chapter_id>', methods=['DELETE'])
 def delete_chapter(book_name, chapter_id):
-    # 1. 核心修复：在删除章节物理文件之前，先触发时光倒流机制
-    # 把这章产出的：伏笔、故事线推演、角色弧光、新势力、向量数据库 全部洗刷干净
+    # 核心修复：彻底删除章节时，必须完全清洗（is_full_delete=True）
     try:
-        cleanup_chapter_data(book_name, chapter_id)
+        from finalize_service import cleanup_chapter_data
+        cleanup_chapter_data(book_name, chapter_id, is_full_delete=True)
     except Exception as e:
         print(f"执行章节时光倒流清理失败: {e}")
 
-    # 2. 最后再删除章节自身的基础信息
     success = dao.delete_chapter(book_name, chapter_id)
-
     if success:
         return jsonify({'message': '删除及关联数据清理成功'})
     return jsonify({'error': '删除失败'}), 400
@@ -106,13 +104,14 @@ def finalize_chapter(book_name, chapter_id):
     title = data.get('title', '')
     content = data.get('content', '')
     is_re_final = data.get('is_re_final', False)
+    # 【新增】获取要定稿的轨道，默认全开
+    tracks = data.get('tracks', {"plot": True, "entity": True, "vector": True})
 
     # 状态强行标记为 true (已定稿)
     dao.update_chapter(book_name, chapter_id, title=title, content=content)
 
-    # 【核心修改】：不再直接返回 JSON，而是返回流式事件，唤醒前端的小助手
     return Response(
-        run_finalize_pipeline_stream(book_name, chapter_id, content, is_re_final),
+        run_finalize_pipeline_stream(book_name, chapter_id, content, is_re_final, tracks),
         mimetype='text/event-stream'
     )
 
@@ -421,7 +420,6 @@ def get_vector_tags(book_name):
 
 
 @api_bp.route('/ai/generate_content/stream', methods=['POST'])
-@api_bp.route('/ai/generate_content/stream', methods=['POST'])
 def ai_generate_content_stream():
     """接口C：最后一步，打字机流式生成正文（带兜底保护机制）"""
     data = request.json
@@ -445,7 +443,7 @@ def ai_generate_content_stream():
                     "engine": "章节生成 - 第三阶段：正式执笔",
                     "debug": {
                         "prompt": prompt_text,
-                        "response": "（当前为流式输出，正文正实时打印在编辑器中...）"
+                        "response": ""
                     }
                 }
             }
@@ -453,9 +451,16 @@ def ai_generate_content_stream():
 
             for chunk in stream:
                 if ai_handler._stop_event.is_set(): break
+                delta = chunk.choices[0].delta
+
+                # 2. 【核心新增】：捕获 DeepSeek 等模型的思考过程 (reasoning_content)
+                reasoning = getattr(delta, 'reasoning_content', '')
+                if not reasoning and hasattr(delta, 'model_extra') and delta.model_extra:
+                    reasoning = delta.model_extra.get('reasoning_content', '')
                 content = chunk.choices[0].delta.content or ""
                 full_text += content  # 后端同步积攒文字
-                yield f"data: {json.dumps({'content': content})}\n\n"
+
+                yield f"data: {json.dumps({'content': content, 'reasoning': reasoning})}\n\n"
 
         except GeneratorExit:
             # 【关键捕获】：这是前端切换界面、断开连接时必然触发的异常
@@ -470,8 +475,8 @@ def ai_generate_content_stream():
                     chapter = dao.get_chapter(book_name, chapter_id)
                     if chapter:
                         existing_content = chapter.get('content', '')
-                        if existing_content and not existing_content.endswith('\n\n'):
-                            new_content = existing_content + '\n\n' + full_text
+                        if existing_content and not existing_content.endswith('\n'):
+                            new_content = existing_content + '\n' + full_text
                         else:
                             new_content = existing_content + full_text
                         dao.update_chapter(book_name, chapter_id, content=new_content)
@@ -514,14 +519,20 @@ def ai_entity_shape():
 # --------- 提示词管理-------------
 @api_bp.route('/prompts', methods=['GET'])
 def get_prompts():
-    """获取所有提示词列表（包含默认与自定义）"""
-    return jsonify(prompt_manager.get_all_prompts())
+    """获取提示词列表（合并默认、全局自定义与书籍专属）"""
+    book_name = request.args.get('book_name')
+    return jsonify(prompt_manager.get_all_prompts(book_name))
+
 
 @api_bp.route('/prompts', methods=['PUT'])
 def update_prompts():
-    """保存前端自定义的提示词"""
+    """保存提示词，若有book_name则只对当前书籍生效"""
     data = request.json
     if not isinstance(data, list):
         return jsonify({"error": "格式错误，期望收到列表"}), 400
-    prompt_manager.save_prompts(data)
-    return jsonify({"status": "success", "message": "提示词保存成功"})
+
+    book_name = request.args.get('book_name')
+    prompt_manager.save_prompts(data, book_name)
+
+    msg = "当前书籍专属提示词保存成功" if book_name else "全局默认提示词保存成功"
+    return jsonify({"status": "success", "message": msg})

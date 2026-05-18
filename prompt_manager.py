@@ -1,6 +1,7 @@
 # prompt_manager.py
 import os
 import json
+from base_dao import NovelModel
 
 # 导入包含提示词的纯文本模块
 from prompts import chapter_analysis, chapter_generation, entity_shaping, storyline
@@ -31,27 +32,41 @@ ALIASES = {
     "PROMPT_CHAT_ASSISTANT": "自由聊天"
 }
 
+
 class PromptManager:
     def __init__(self):
-        # 将自定义提示词保存在全局 data 目录下
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.filepath = os.path.join(current_dir, 'data', 'custom_prompts.json')
-        if not os.path.exists(os.path.dirname(self.filepath)):
-            os.makedirs(os.path.dirname(self.filepath))
+        # 全局配置路径
+        self.global_filepath = os.path.join(current_dir, 'data', 'custom_prompts.json')
+        if not os.path.exists(os.path.dirname(self.global_filepath)):
+            os.makedirs(os.path.dirname(self.global_filepath))
+        self.dao = NovelModel()
 
-    def _load_customs(self):
-        if os.path.exists(self.filepath):
-            with open(self.filepath, 'r', encoding='utf-8') as f:
+    def _load_global_customs(self):
+        """加载全局自定义配置"""
+        if os.path.exists(self.global_filepath):
+            with open(self.global_filepath, 'r', encoding='utf-8') as f:
                 return json.load(f)
         return {}
 
-    def get_all_prompts(self):
-        """前端拉取列表时使用：动态扫描 + 合并自定义配置"""
-        customs = self._load_customs()
+    def _load_book_customs(self, book_name):
+        """加载当前书籍专属的配置"""
+        if not book_name:
+            return {}
+        book_prompt_path = os.path.join(self.dao.data_root, book_name, 'custom_prompts.json')
+        if os.path.exists(book_prompt_path):
+            with open(book_prompt_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return {}
+
+    def get_all_prompts(self, book_name=None):
+        """前端拉取列表时使用：层级合并 (书籍专属 > 全局自定义 > 默认配置)"""
+        global_customs = self._load_global_customs()
+        book_customs = self._load_book_customs(book_name)
+
         results = []
         for mod in PROMPT_MODULES:
             for var_name in dir(mod):
-                # 动态捕捉所有以 PROMPT_ 开头的变量
                 if var_name.startswith("PROMPT_") and isinstance(getattr(mod, var_name), str):
                     if "SYSTEM" in var_name:
                         role = "system"
@@ -59,9 +74,21 @@ class PromptManager:
                         role = "assistant"
                     else:
                         role = "user"
-                    # 自定义存在就用自定义的，不存在就用默认的
-                    content = customs.get(var_name, {}).get("content", getattr(mod, var_name))
-                    alias = customs.get(var_name, {}).get("alias", ALIASES.get(var_name, var_name))
+
+                    # 确定最终生效的内容和别名
+                    content = getattr(mod, var_name)
+                    alias = ALIASES.get(var_name, var_name)
+
+                    # 全局覆盖
+                    if var_name in global_customs:
+                        content = global_customs[var_name].get("content", content)
+                        alias = global_customs[var_name].get("alias", alias)
+
+                    # 书籍专属覆盖
+                    if var_name in book_customs:
+                        content = book_customs[var_name].get("content", content)
+                        alias = book_customs[var_name].get("alias", alias)
+
                     results.append({
                         "name": var_name,
                         "role": role,
@@ -70,25 +97,37 @@ class PromptManager:
                     })
         return results
 
-    def save_prompts(self, prompt_list):
-        """前端保存时使用：仅保存需要自定义的内容"""
-        customs = self._load_customs()
-        for p in prompt_list:
-            customs[p['name']] = {"alias": p['alias'], "content": p['content']}
-        with open(self.filepath, 'w', encoding='utf-8') as f:
-            json.dump(customs, f, ensure_ascii=False, indent=2)
+    def save_prompts(self, prompt_list, book_name=None):
+        """前端保存时使用：若存在书籍则保存为书籍专属，否则为全局默认"""
+        if book_name:
+            customs = self._load_book_customs(book_name)
+            for p in prompt_list:
+                customs[p['name']] = {"alias": p['alias'], "content": p['content']}
+            book_prompt_path = os.path.join(self.dao.data_root, book_name, 'custom_prompts.json')
+            with open(book_prompt_path, 'w', encoding='utf-8') as f:
+                json.dump(customs, f, ensure_ascii=False, indent=2)
+        else:
+            customs = self._load_global_customs()
+            for p in prompt_list:
+                customs[p['name']] = {"alias": p['alias'], "content": p['content']}
+            with open(self.global_filepath, 'w', encoding='utf-8') as f:
+                json.dump(customs, f, ensure_ascii=False, indent=2)
 
-    def get(self, var_name):
-        """后台业务调用时使用：自定义优先，默认保底"""
-        customs = self._load_customs()
-        if var_name in customs and customs[var_name].get("content"):
-            return customs[var_name]["content"]
+    def get(self, var_name, book_name=None):
+        """后台业务调用时使用：书籍专属 > 全局自定义 > 默认保底"""
+        book_customs = self._load_book_customs(book_name)
+        if var_name in book_customs and book_customs[var_name].get("content"):
+            return book_customs[var_name]["content"]
 
-        # 兜底：从原本的模块里取默认值
+        global_customs = self._load_global_customs()
+        if var_name in global_customs and global_customs[var_name].get("content"):
+            return global_customs[var_name]["content"]
+
         for mod in PROMPT_MODULES:
             if hasattr(mod, var_name):
                 return getattr(mod, var_name)
         return ""
+
 
 # 导出单例
 prompt_manager = PromptManager()

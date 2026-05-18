@@ -198,13 +198,14 @@ class NovelModel:
 
     def add_character(self, book_name: str, character_name: str,
                       importance_level: int = 1, profile: str = "", personal_info: str = "",
-                      relationships: List[Dict[str, Any]] = None, change_log: str = "") -> bool:
+                      relationships: List[Dict[str, Any]] = None, change_log: str = "",attributes_log: str = "") -> bool:
         if self.get_character(book_name, character_name): return False
         new_char = {
             "character_name": character_name, "importance_level": importance_level,
             "personal_info": personal_info,  # 【新增】个人资料字段
             "profile": profile, "relationships": relationships or [],
-            "change_log": change_log, "arc_history": []
+            "change_log": change_log, "arc_history": [],
+            "attributes_log": attributes_log, "attribute_history": []
         }
         characters = self.list_characters(book_name)
         characters.append(new_char)
@@ -215,11 +216,9 @@ class NovelModel:
         characters = self.list_characters(book_name)
         target = next((ch for ch in characters if ch.get("character_name") == character_name), None)
         if not target: return False
-        allowed = ["importance_level", "personal_info", "profile", "relationships", "change_log", "arc_history"]
+        allowed = ["importance_level", "personal_info", "profile", "relationships", "change_log", "arc_history", "attributes_log", "attribute_history"]
         for key, value in kwargs.items():
             if key in allowed: target[key] = value
-        # ... 后面保持不变 ...
-
         new_name = kwargs.get("new_character_name")
         if new_name and new_name != character_name:
             target["character_name"] = new_name
@@ -309,6 +308,15 @@ class NovelModel:
             # 清理弧光历史
             original_arc_len = len(char.get("arc_history", []))
             char["arc_history"] = [arc for arc in char.get("arc_history", []) if arc.get("chapter_id") != chapter_id]
+            if "attribute_history" in char:
+                original_attr_len = len(char.get("attribute_history", []))
+                char["attribute_history"] = [a for a in char.get("attribute_history", []) if
+                                             a.get("chapter_id") != chapter_id]
+                # 同步重构 attributes_log
+                if original_attr_len != len(char["attribute_history"]):
+                    char["attributes_log"] = '\n'.join([x.get("detail", "") for x in char["attribute_history"]])
+                    char_changed = True
+
 
             # 清理关系网历史
             if "relationships" in char:

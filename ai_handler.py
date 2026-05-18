@@ -44,33 +44,23 @@ class AIHandler:
         return self.AVAILABLE_MODELS
 
     def chat(
-        self,
-        messages: List[Dict[str, str]],
-        model: str = "openai/gpt-4o-mini",
-        temperature: float = 0.7,
-        max_tokens: int = 1024,
-        top_p: float = 1.0,
-        stream: bool = False,
-        api_key: Optional[str] = None,
-        **kwargs
+            self,
+            messages: List[Dict[str, str]],
+            model: str = "openai/gpt-4o-mini",
+            temperature: float = 0.7,
+            max_tokens: int = 1024,
+            top_p: float = 1.0,
+            stream: bool = False,
+            api_key: Optional[str] = None,
+            **kwargs
     ) -> Union[ModelResponse, Generator]:
         """
         发起对话请求
-
-        :param messages: 标准消息列表 [{"role": "user", "content": "..."}]
-        :param model: 模型标识符
-        :param temperature: 温度参数
-        :param max_tokens: 最大生成 token 数
-        :param top_p: 核采样参数
-        :param stream: 是否流式输出
-        :param api_key: 可选的 API Key（若不提供则从环境变量读取）
-        :return: 完整响应或生成器
         """
         self._stop_event.clear()
 
-        # 如果传入了 api_key，临时设置到环境变量（仅本次调用生效）
+        # 如果传入了 api_key，临时设置到环境变量
         if api_key:
-            # 根据模型前缀推断提供商并设置对应的环境变量
             self._set_api_key_for_model(model, api_key)
 
         try:
@@ -79,22 +69,58 @@ class AIHandler:
                 max_tokens=max_tokens, top_p=top_p, stream=stream, **kwargs
             )
 
-            # 【核心新增】：如果是阻塞型调用（比如定稿分析），在底层直接拦截并记录日志！
+            # 非流式调用，直接记录
             if not stream:
                 assistant_content = response.choices[0].message.content
-                # 记录最后一条 user 消息
                 user_msg = messages[-1]['content'] if messages else "SYSTEM_CALL"
                 self.save_conversation_log(
-                    session_id="SYSTEM_AUTO_LOG",  # 标记为系统自动记录
+                    session_id="SYSTEM_AUTO_LOG",
                     user_message=user_msg,
                     assistant_message=assistant_content,
                     model=model,
                     params={"temperature": temperature, "max_tokens": max_tokens, "top_p": top_p}
                 )
+                return response
             else:
                 self._current_stream = response
 
-            return response
+                # 【底层解药】：包装流式返回，在流断开或完成时，强制拦截并落盘日志！
+                def stream_wrapper():
+                    full_text = ""
+                    reasoning_text = ""
+                    try:
+                        for chunk in response:
+                            if self._stop_event.is_set():
+                                break
+
+                            delta = chunk.choices[0].delta
+                            content = delta.content or ""
+                            full_text += content
+
+                            # 连同 DeepSeek 的思考过程一起捕获保存
+                            reasoning = getattr(delta, 'reasoning_content', '')
+                            if not reasoning and hasattr(delta, 'model_extra') and delta.model_extra:
+                                reasoning = delta.model_extra.get('reasoning_content', '')
+                            if reasoning:
+                                reasoning_text += reasoning
+
+                            yield chunk
+                    finally:
+                        # 不管是生成完毕还是中途被掐断，都会走到 finally 进行落盘！
+                        final_save_text = full_text
+                        if reasoning_text:
+                            final_save_text = f"【AI思考过程】:\n{reasoning_text}\n\n【正式回复】:\n{full_text}"
+
+                        user_msg = messages[-1]['content'] if messages else "SYSTEM_CALL"
+                        self.save_conversation_log(
+                            session_id="SYSTEM_AUTO_LOG_STREAM",
+                            user_message=user_msg,
+                            assistant_message=final_save_text,
+                            model=model,
+                            params={"temperature": temperature, "max_tokens": max_tokens, "top_p": top_p}
+                        )
+
+                return stream_wrapper()
         except Exception as e:
             raise e
 

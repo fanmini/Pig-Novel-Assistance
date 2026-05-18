@@ -105,9 +105,9 @@ def generate_storyline_summary(book_name: str, node_id: str, preview_only: bool 
     previous_storylines = _build_previous_storylines(book_name, node_id)
 
     # 4. 选择 Prompt
-    system_prompt = prompt_manager.get('PROMPT_MAIN_NODE_SYSTEM') if node_type == 'main' else prompt_manager.get('PROMPT_SUB_NODE_SYSTEM')
+    system_prompt = prompt_manager.get('PROMPT_MAIN_NODE_SYSTEM', book_name) if node_type == 'main' else prompt_manager.get('PROMPT_SUB_NODE_SYSTEM', book_name)
 
-    user_prompt = prompt_manager.get('PROMPT_STORYLINE_USER').format(
+    user_prompt = prompt_manager.get('PROMPT_STORYLINE_USER', book_name).format(
         global_knowledge=global_knowledge,
         entities_context=entities_context,
         previous_storylines=previous_storylines,

@@ -38,8 +38,8 @@ def build_global_knowledge(book_name: str) -> str:
     return "\n".join(lines)
 
 
-def build_macro_storyline(book_name: str, active_main_id: str) -> str:
-    """公共基座 2：宏观金字塔大纲 (从头遍历到当前活跃大节点，并增加章节顺序感)"""
+def build_macro_storyline(book_name: str, active_main_id: str, active_sub_id: str = "") -> str:
+    """公共基座 2：宏观金字塔大纲 (从头遍历到当前活跃大节点和小节点，屏蔽未来未发生节点)"""
     storylines = dao.list_storylines(book_name)
     analyses = dao.list_chapter_analyses(book_name)
 
@@ -70,12 +70,16 @@ def build_macro_storyline(book_name: str, active_main_id: str) -> str:
                 c_status = "✅已完结" if c.get('is_completed') else "🔄进行中"
                 lines.append(f"    ▶ 【当前大节点下的子节点：{c.get('name')}】{c_range_str} {c_status}")
                 lines.append(f"      └─ 核心内容: {c.get('content', '暂无描述')}")
-            break
+
+                # 【核心修改】：只要遍历到了当前的活跃小节点，说明后面的小节点还没发生，直接截断！
+                if active_sub_id and c['id'] == active_sub_id:
+                    break
+            break  # 大节点也截断，不展示后面的大节点
 
     return "\n".join(lines) if lines else "暂无宏观大纲"
 
 
-def build_micro_details(book_name: str, current_chapter_id: int, history_limit: int = 10) -> str:
+def build_micro_details(book_name: str, current_chapter_id: int, history_limit: int = 5) -> str:
     """公共基座 3：微观细节 (最近 N 章的具体详情)。"""
     analyses = dao.list_chapter_analyses(book_name)
 
@@ -148,6 +152,12 @@ def build_full_lifecycle_entities(book_name: str, char_names: list = None, facti
             # 个人信息
             personal_info = c.get('personal_info', '').strip()
             lines.append(f"    - 个人信息: {personal_info if personal_info else '暂无个人信息'}")
+            attributes_log = c.get('attributes_log', '')
+            if max_chapter_id:
+                attributes_log = _filter_future_logs(attributes_log, max_chapter_id)
+            if attributes_log.strip():
+                lines.append(
+                    f"    - 状态演变(物品/技能/外观等):\n      {attributes_log.replace(chr(10), chr(10) + '      ')}")
 
             # 历史演变兜底
             change_log = c.get('change_log', '')
@@ -165,11 +175,18 @@ def build_full_lifecycle_entities(book_name: str, char_names: list = None, facti
             if rels:
                 for r in rels:
                     target = r.get('target')
+
+                    # 【核心优化】：如果当前传递了具体的出场角色名单(char_names)
+                    # 且这个关系的“目标人物”压根不在本次出场名单里，直接跳过，不给大模型看！
+                    if char_names is not None and target not in char_names:
+                        continue
+
                     history = r.get('history', [])
                     if max_chapter_id:
                         history = _filter_future_list(history, max_chapter_id)
                     if history:
-                        rel_lines.append(f"{target}: {history[-1]}")
+                        history_str = " ➔ ".join(history)
+                        rel_lines.append(f"{target}: {history_str}")
 
             if rel_lines:
                 lines.append(f"    - 核心关系:\n      " + "\n      ".join(rel_lines))
