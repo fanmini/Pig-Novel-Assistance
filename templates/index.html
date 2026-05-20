@@ -421,6 +421,29 @@
       const analysisCache = reactive({});
       const bookDetails = ref({});
       const charactersList = ref([]);
+
+      // ===== 【新增1】记录变动的角色名单 =====
+      const changedCharNames = ref([]);
+
+      // ===== 【新增2】对比新旧数据的函数 =====
+      function updateChangedCharacters(oldSnapshotStr, newCharsList) {
+          changedCharNames.value = []; // 先清空
+          if (!oldSnapshotStr || !newCharsList) return;
+
+          const oldCharsList = JSON.parse(oldSnapshotStr);
+          for (let newChar of newCharsList) {
+              const oldChar = oldCharsList.find(c => c.character_name === newChar.character_name);
+              // 如果是新角色，或者核心数据发生了变化
+              if (!oldChar ||
+                  JSON.stringify(newChar.attributes_log) !== JSON.stringify(oldChar.attributes_log) ||
+                  JSON.stringify(newChar.relationships) !== JSON.stringify(oldChar.relationships) ||
+                  JSON.stringify(newChar.change_log) !== JSON.stringify(oldChar.change_log)
+              ) {
+                  changedCharNames.value.push(newChar.character_name);
+              }
+          }
+      }
+
       const foreshadowsList = ref([]);
       const memoryPacksList = ref([]);
       const promptsList = ref([]);
@@ -1661,7 +1684,21 @@
       async function deleteMemoryPack(title) { try { await apiFetch(`${API_BASE}/books/${currentBook.value}/memory_packs/${title}`, { method: 'DELETE' }); await loadMemoryPacks(); showToast('已删除', 'success'); deletingItemId.value = null; } catch (e) { showToast('删除失败', 'error'); } }
 
       async function loadCharacters() { if (!currentBook.value) return; try { charactersList.value = await apiFetch(`${API_BASE}/books/${currentBook.value}/characters`); } catch (e) {} }
-      const sortedCharacters = computed(() => [...charactersList.value].sort((a,b) => (b.importance_level||0) - (a.importance_level||0)));
+
+      // ===== 【修改】综合排序：变动的排在最上面，都没变动的按星级排 =====
+      const sortedCharacters = computed(() => {
+          return [...charactersList.value].sort((a, b) => {
+              const aChanged = changedCharNames.value.includes(a.character_name) ? 1 : 0;
+              const bChanged = changedCharNames.value.includes(b.character_name) ? 1 : 0;
+
+              if (aChanged !== bChanged) {
+                  return bChanged - aChanged; // 变动的优先置顶
+              }
+              // 如果都变了，或者都没变，继续按星级（重要性）排序
+              return (b.importance_level || 0) - (a.importance_level || 0);
+          });
+      });
+
       function newCharacter() {
           editingCharacter.value = null;
           charForm.name = '';
@@ -1964,6 +2001,9 @@
       async function triggerFinalize(isReFinal) {
           if (!currentBook.value || !currentChapterId.value) return;
 
+          // ===== 【新增】在定稿前，偷偷拍下当前角色的快照 =====
+          const oldCharsSnapshot = JSON.stringify(charactersList.value);
+
           // 1. 初始化状态
           finalizeSteps.value = [];
           showAiSidebar.value = true;
@@ -2011,6 +2051,10 @@
                         if (data === '[DONE]') {
                             if(ch) ch.status = true;
                             await Promise.all([loadChapters(), loadStorylines(), loadForeshadows(), loadAnalysisData(), loadCharacters(),loadFactions()]);
+
+                            // ===== 【新增】数据拉取完毕后，执行对比找不同！ =====
+                            updateChangedCharacters(oldCharsSnapshot, charactersList.value);
+
                             return;
                         }
                         try {
@@ -2120,7 +2164,7 @@
         activePanel, expandedChapters, showAiSidebar, editMode, editingMeta, editingCharacter,
 
         // 知识库缓存
-        analysisCache, bookDetails, charactersList, sortedCharacters,
+        analysisCache, bookDetails, charactersList, sortedCharacters, changedCharNames,
         foreshadowsList, memoryPacksList, kbActiveTab, storylineNodes, editingStorylineNode,
 
         // 伏笔关联与管理
@@ -2455,7 +2499,12 @@
               <div v-show="roleActiveTab === 'characters'">
                   <div v-for="char in sortedCharacters" :key="char.character_name" class="character-card" @click="editCharacter(char)">
                     <div class="character-info" style="flex: 1; overflow: hidden;">
-                        <div class="character-name">[[ char.character_name ]]</div>
+                        <div class="character-name">
+                            [[ char.character_name ]]
+                            <span v-if="changedCharNames.includes(char.character_name)" style="color: #ff9800; font-size: 11px; margin-left: 4px; padding: 2px 6px; background: #fff7ed; border-radius: 10px; border: 1px solid #fed7aa; display: inline-block; vertical-align: middle;">
+                                ✨更新
+                            </span>
+                        </div>
                         <div class="character-stars">[[ '★'.repeat(char.importance_level || 1) ]]</div>
                     </div>
 

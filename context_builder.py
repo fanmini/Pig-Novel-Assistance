@@ -79,7 +79,7 @@ def build_macro_storyline(book_name: str, active_main_id: str, active_sub_id: st
     return "\n".join(lines) if lines else "暂无宏观大纲"
 
 
-def build_micro_details(book_name: str, current_chapter_id: int, history_limit: int = 5) -> str:
+def build_micro_details(book_name: str, current_chapter_id: int, history_limit: int = 3) -> str:
     """公共基座 3：微观细节 (最近 N 章的具体详情)。"""
     analyses = dao.list_chapter_analyses(book_name)
 

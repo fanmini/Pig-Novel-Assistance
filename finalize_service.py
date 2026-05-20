@@ -235,53 +235,37 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
         current_factions = dao.list_factions(book_name)
         is_char_changed, is_faction_changed = False, False
 
-        # 【核心新增】：解析长期状态/属性变更
+        # 【状态/物品演变】直接追加到文本
         for attr in entity_json.get('attribute_changes', []):
             if attr.get('character_name') and attr.get('attribute_detail'):
                 target = next((c for c in current_chars if c['character_name'] == attr['character_name']), None)
                 if target:
-                    if 'attribute_history' not in target: target['attribute_history'] = []
                     new_attr_detail = f"【第{chapter_id}章】：{attr['attribute_detail']}"
-                    target['attribute_history'].append({"chapter_id": chapter_id, "detail": new_attr_detail})
-                    target['attribute_history'].sort(key=lambda x: x['chapter_id'])
-                    # 重构文本 log 供前端查看
-                    target['attributes_log'] = "\n".join([x['detail'] for x in target['attribute_history']])
+                    if not target.get('attributes_log'):
+                        target['attributes_log'] = new_attr_detail
+                    else:
+                        target['attributes_log'] += f"\n{new_attr_detail}"
                     is_char_changed = True
 
+        # 【命运经历/弧光变化】直接追加到文本
         for arc in entity_json.get('arc_changes', []):
             if arc.get('character_name') and arc.get('arc_detail'):
                 target = next((c for c in current_chars if c['character_name'] == arc['character_name']), None)
                 if target:
-                    if 'arc_history' not in target: target['arc_history'] = []
                     new_arc_detail = f"【第{chapter_id}章】：{arc['arc_detail']}"
-                    target['arc_history'].append({"chapter_id": chapter_id, "arc_summary": arc.get('arc_summary', ''),
-                                                  "arc_detail": new_arc_detail})
-                    target['arc_history'].sort(key=lambda x: x['chapter_id'])
-                    if 'change_log' not in target or not target['change_log']:
+                    if not target.get('change_log'):
                         target['change_log'] = new_arc_detail
                     elif new_arc_detail not in target['change_log']:
                         target['change_log'] += f"\n{new_arc_detail}"
                     is_char_changed = True
 
+        # 【初始状态补全】直接追加到文本
         for comp in entity_json.get('arc_completions', []):
             if comp.get('character_name') and comp.get('arc_detail'):
                 target = next((c for c in current_chars if c['character_name'] == comp['character_name']), None)
-                if target:
-                    if 'arc_history' not in target: target['arc_history'] = []
-
-                    # 只有当角色确实没有任何弧光历史时，才允许注入初始补全
-                    if len(target['arc_history']) == 0:
-                        new_arc_detail = f"【第{chapter_id}章】初始补全：{comp['arc_detail']}"
-                        target['arc_history'].append({
-                            "chapter_id": chapter_id,
-                            "arc_summary": comp.get('arc_summary', '初始基础弧光'),
-                            "arc_detail": new_arc_detail
-                        })
-                        if 'change_log' not in target or not target['change_log']:
-                            target['change_log'] = new_arc_detail
-                        elif new_arc_detail not in target['change_log']:
-                            target['change_log'] += f"\n{new_arc_detail}"
-                        is_char_changed = True
+                if target and not target.get('change_log'):
+                    target['change_log'] = f"【第{chapter_id}章】初始设定：{comp['arc_detail']}"
+                    is_char_changed = True
 
         for rel in entity_json.get('relationship_changes', []):
             if rel.get('subject') and rel.get('target') and rel.get('relation_detail'):
@@ -332,8 +316,7 @@ def _process_and_save_results(book_name: str, chapter_id: int, plot_json: dict, 
 
                 current_chars.append({
                     "character_name": nc['name'], "importance_level": 1, "profile": nc.get('profile', ''),
-                    "relationships": init_rels, "change_log": change_log_text, "arc_history": init_arc,
-                    "attributes_log": "", "attribute_history": []  # 补齐新字段
+                    "relationships": init_rels, "change_log": change_log_text, "attributes_log": ""
                 })
                 is_char_changed = True
 
@@ -492,16 +475,16 @@ def run_finalize_pipeline_stream(book_name: str, chapter_id: int, content: str, 
             plot_result = {}
             if plot_future:
                 plot_result, plot_debug = plot_future.result()
-                log_step("第一轨 (剧情)", "success", "✅ 剧情演进与伏笔推演完毕！", debug=plot_debug)
+                log_step("第一轨 (剧情)", "success", "✅ 第一轨，章节分析！", debug=plot_debug)
 
             entity_result = {}
             if entity_future:
                 entity_result, entity_debug = entity_future.result()
-                log_step("第二轨 (生灵)", "success", "✅ 实体演化与新状态记录完毕！", debug=entity_debug)
+                log_step("第二轨 (生灵)", "success", "✅ 第二轨，角色势力演变！", debug=entity_debug)
 
             if vector_future:
                 vector_result = vector_future.result()
-                log_step("第三轨 (向量)", "success", "✅ 高光片段已打标并存入知识库！", debug=vector_result)
+                log_step("第三轨 (向量)", "success", "✅ 第三轨，向量数据存储！", debug=vector_result)
 
             # --- 数据统筹落盘 ---
             log_step("主控中心", "processing", "💾 正在统筹合并各维度数据，执行安全落盘...")
